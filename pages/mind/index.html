@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>主动心智</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>主动心智</h1>
+      <span class="tag" id="version">v-</span>
+      <span class="tag" id="enabled-tag">-</span>
+      <span class="tag" id="lm-tag">LivingMemory: -</span>
+    </header>
+    <div class="sub" id="runtime">正在连接 AstrBot…</div>
+
+    <section class="panel">
+      <h2 style="margin-top: 0">全局节奏</h2>
+      <div class="grid">
+        <label class="field">
+          <span>唤醒时间自动延后（分钟）</span>
+          <input id="cfg-delay" type="number" min="0" max="1440" step="1" />
+        </label>
+        <label class="field">
+          <span>用户没回话时的连续唤醒上限（-1=无限，0=不再创建）</span>
+          <input id="cfg-cap" type="number" min="-1" max="100" step="1" />
+        </label>
+        <label class="field">
+          <span>用户发言后的判断模式</span>
+          <select id="cfg-mode">
+            <option value="decide">decide（完整决策）</option>
+            <option value="schedule_only">schedule_only（只重排时间）</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>最短 / 最长间隔（分钟）</span>
+          <div style="display: flex; gap: 6px">
+            <input id="cfg-min" type="number" min="1" max="1440" step="1" />
+            <input id="cfg-max" type="number" min="5" max="10080" step="1" />
+          </div>
+        </label>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btn-save-cfg">保存节奏设置</button>
+        <button class="ghost" id="btn-refresh">刷新</button>
+      </div>
+    </section>
+
+    <h2>会话与唤醒作业</h2>
+    <div id="sessions"><div class="empty">正在读取…</div></div>
+
+    <h2>最近决策轨迹</h2>
+    <div id="traces"><div class="empty">正在读取…</div></div>
+
+    <div id="toast"></div>
+    <!-- 宿主会把这一行重写成带 asset_token 的地址，必须先于页面脚本加载 -->
+    <script src="/api/plugin/page/bridge-sdk.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

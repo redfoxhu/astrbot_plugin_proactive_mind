@@ -1,0 +1,16 @@
+{
+  "metadata": {
+    "display_name": "主动心智 Proactive Mind",
+    "short_desc": "自主唤醒与主动行为的决策、执行与唤醒作业面板"
+  },
+  "views": {
+    "mind": {
+      "title": "主动心智"
+    }
+  },
+  "pages": {
+    "mind": {
+      "title": "主动心智"
+    }
+  }
+}
