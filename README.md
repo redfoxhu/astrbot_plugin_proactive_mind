@@ -151,3 +151,8 @@ python -m compileall -q .
 停用插件后直接删除 `data/plugins/astrbot_plugin_proactive_mind/` 即可；
 插件数据在 `data/plugin_data/astrbot_plugin_proactive_mind/`（`state.json`、`memory_fallback.jsonl`），
 可一并删除。不会修改 LivingMemory 的数据库结构与配置。
+
+## 11. 许可证
+
+[MIT](LICENSE) © 2026 redfoxhu
+
