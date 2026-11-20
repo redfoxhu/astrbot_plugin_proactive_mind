@@ -1,146 +1,324 @@
 {
   "basic": {
     "description": "基础开关",
-    "hint": "控制主动心智是否启用、是否在用户发言后也做一次判断（判断结果可以是『安排下次唤醒』而不发消息）。",
+    "hint": "控制主动心智是否启用、是否在用户发言后也做一次判断。",
     "type": "object",
     "items": {
       "enabled": {
         "description": "启用主动心智",
-        "hint": "关闭后插件不再执行任何决策、不再创建唤醒作业，已有作业会在插件重载后停止。",
+        "hint": "关闭后不再执行任何周期、不再创建作业。",
         "type": "bool",
         "default": true
       },
       "trigger_on_user_message": {
         "description": "用户发言后也判断一次",
-        "hint": "开启后：机器人回复完用户消息，插件会用同一套人格+流水判断『要不要主动做点什么』并重新安排下次唤醒时间。",
+        "hint": "用户消息周期等同于一次『对话节奏』：主 Agent 已回复 = 本轮说了话 → 必须更新对话作业。",
         "type": "bool",
         "default": true
       },
       "user_message_mode": {
         "description": "用户发言后的判断模式",
-        "hint": "decide=完整决策（可能追加一条主动消息、调工具）；schedule_only=只根据流水重排下次唤醒时间，不发消息不调工具（刚回复完不会重复刷屏）。",
+        "hint": "record_only=记录模式：主 Agent 的回复就是这次对话 job 的执行体，插件只记账不补话（一条消息只回一条）；decide=插件也可能补一句；schedule_only=只重排时间。",
         "type": "string",
-        "options": ["decide", "schedule_only"],
+        "options": [
+          "record_only",
+          "decide",
+          "schedule_only"
+        ],
         "default": "decide"
       },
       "debounce_seconds": {
-        "description": "用户连发消息的合并窗口（秒）",
-        "hint": "窗口内的多条消息只触发一次判断，避免连着调用大模型。（允许范围：0–120）",
+        "description": "用户连发的合并窗口（秒）",
+        "hint": "窗口内多条消息只触发一次判断。（允许范围：0–120）",
         "type": "int",
         "default": 3,
-        "slider": {"min": 0, "max": 120, "step": 1}
+        "slider": {
+          "min": 0,
+          "max": 120,
+          "step": 1
+        }
       },
       "post_reply_delay_seconds": {
         "description": "回复后延迟判断（秒）",
-        "hint": "等回复真正落库、记忆插件写完后才开始判断，避免读不到最新一条回复。（允许范围：0–60）",
+        "hint": "等回复与记忆落库后再读流水。（允许范围：0–60）",
         "type": "int",
         "default": 2,
-        "slider": {"min": 0, "max": 60, "step": 1}
+        "slider": {
+          "min": 0,
+          "max": 60,
+          "step": 1
+        }
+      },
+      "next_time_marker": {
+        "description": "解析并抠掉回复里的下次时间标记",
+        "hint": "主 Agent 在回复末尾写 [[pmind_next:+90m]]，插件在发送前抠掉并据此更新对话节奏（用户看不到）。",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "state": {
+    "description": "状态注入策略",
+    "hint": "控制提示词里『上次主动说话内容』这类历史信息的回放，避免旧话反复锚定模型。",
+    "type": "object",
+    "items": {
+      "recent_sent_hours": {
+        "description": "旧主动消息回放时限（小时）",
+        "hint": "超过这个小时数就不再回放上次主动说的话（只写『内容不再回放』），防止一句旧话被逐轮复述。（允许范围：0–168）",
+        "type": "float",
+        "default": 6.0,
+        "slider": {
+          "min": 0.0,
+          "max": 168.0,
+          "step": 0.5
+        }
       }
     }
   },
   "flow": {
     "description": "对话流水来源",
-    "hint": "决定『最近对话流水』从哪里读、读多少条。默认跟随 LivingMemory 的上下文窗口（其默认值 50 条）。",
+    "hint": "默认跟随 LivingMemory 的上下文窗口（其默认 50 条）。",
     "type": "object",
     "items": {
       "flow_source": {
         "description": "流水来源",
-        "hint": "livingmemory=读记忆插件的会话流水（推荐，含它自己的 bot 归因）；platform=AstrBot 平台对话历史；hybrid=优先记忆插件，读不到再回退平台历史。",
+        "hint": "livingmemory / platform / hybrid。",
         "type": "string",
-        "options": ["livingmemory", "platform", "hybrid"],
+        "options": [
+          "livingmemory",
+          "platform",
+          "hybrid"
+        ],
         "default": "livingmemory"
       },
       "flow_message_count": {
-        "description": "上下文窗口大小（条）",
-        "hint": "传给大模型的历史消息条数。默认 50，与 LivingMemory 的『上下文窗口大小（条）默认值:50』对齐。（允许范围：5–200）",
+        "description": "对话周期流水条数",
+        "hint": "对话/临时周期注入的流水条数。（允许范围：5–200）",
         "type": "int",
         "default": 50,
-        "slider": {"min": 5, "max": 200, "step": 1}
+        "slider": {
+          "min": 5,
+          "max": 200,
+          "step": 1
+        }
       },
       "follow_livingmemory_window": {
-        "description": "自动跟随 LivingMemory 的窗口大小",
-        "hint": "开启后忽略上面的条数，直接使用 LivingMemory 配置里的 session_manager.context_window_size（当前实机为 50）。",
+        "description": "自动跟随 LivingMemory 窗口",
+        "hint": "开启后忽略上面的条数，直接用 session_manager.context_window_size。",
         "type": "bool",
         "default": true
       },
       "livingmemory_plugin_dir": {
         "description": "LivingMemory 插件目录名",
-        "hint": "用于定位插件实例与其数据目录（conversations.db）。一般无需修改。",
+        "hint": "用于定位插件实例与其数据目录（conversations.db / livingmemory.db）。",
         "type": "string",
         "default": "astrbot_plugin_livingmemory"
       },
       "flow_max_chars": {
         "description": "流水文本字符上限",
-        "hint": "拼进提示词的流水总字符上限，超出时从最旧的消息开始裁剪。（允许范围：2000–60000）",
+        "hint": "超出时从最旧的消息开始裁剪。（允许范围：2000–60000）",
         "type": "int",
         "default": 12000,
-        "slider": {"min": 2000, "max": 60000, "step": 500}
+        "slider": {
+          "min": 2000,
+          "max": 60000,
+          "step": 500
+        }
+      },
+      "flow_max_age_hours": {
+        "description": "流水最长回溯（小时）",
+        "hint": "早于该时长的流水不再注入，避免隔夜旧话题反复锚定；0=不限制。（允许范围：0–720）",
+        "type": "float",
+        "default": 24.0,
+        "slider": {
+          "min": 0.0,
+          "max": 720.0,
+          "step": 1.0
+        }
       }
     }
   },
   "wake": {
-    "description": "唤醒节奏",
-    "hint": "插件会把大模型给出的时间点钳制在允许区间内，并可整体延后，作为最终的唤醒作业时间。",
+    "description": "对话节奏",
+    "hint": "对话作业（恒 1 个）的时间区间与兜底。只有在『本轮说了话』时才更新，且必须更新。",
     "type": "object",
     "items": {
       "wake_delay_minutes": {
-        "description": "唤醒时间自动延后（分钟）",
-        "hint": "在模型给出的时间点基础上再推迟这么多分钟（可在面板里对单个会话临时覆盖）。（允许范围：0–1440）",
+        "description": "自主时间自动延后（分钟）",
+        "hint": "只作用于对话/爱好的自主判断时间，临时提醒不受影响。（允许范围：0–1440）",
         "type": "int",
         "default": 0,
-        "slider": {"min": 0, "max": 1440, "step": 1}
-      },
-      "default_interval_minutes": {
-        "description": "默认间隔（分钟）",
-        "hint": "模型没给出合法时间、或调用失败时使用的兜底间隔。（允许范围：5–1440）",
-        "type": "int",
-        "default": 120,
-        "slider": {"min": 5, "max": 1440, "step": 5}
+        "slider": {
+          "min": 0,
+          "max": 1440,
+          "step": 1
+        }
       },
       "min_interval_minutes": {
-        "description": "最短间隔（分钟）",
-        "hint": "唤醒时间不得早于『现在 + 该值』，防止模型给出马上再唤醒导致刷屏。（允许范围：1–1440）",
+        "description": "对话最短间隔（分钟）",
+        "hint": "对话最短间隔；也是『她没给时间』时的随机下限。（允许范围：1–1440）",
         "type": "int",
         "default": 5,
-        "slider": {"min": 1, "max": 1440, "step": 1}
+        "slider": {
+          "min": 1,
+          "max": 1440,
+          "step": 1
+        }
       },
       "max_interval_minutes": {
-        "description": "最长间隔（分钟）",
-        "hint": "唤醒时间不得晚于『现在 + 该值』，防止模型给出过远的时间。（允许范围：5–10080）",
+        "description": "对话最长间隔（分钟）",
+        "hint": "对话最长间隔；也是『她没给时间』时的随机上限。默认 1440 = 1 天。（允许范围：5–1440）",
         "type": "int",
         "default": 1440,
-        "slider": {"min": 5, "max": 10080, "step": 5}
+        "slider": {
+          "min": 5,
+          "max": 1440,
+          "step": 5
+        }
       },
       "catch_up_missed_wakes": {
-        "description": "补跑错过的唤醒",
-        "hint": "插件启动时若发现唤醒时间已过期：开启=立即补跑一次；关闭=直接顺延到『现在 + 默认间隔』。",
+        "description": "补跑错过的作业",
+        "hint": "启动时过期的作业：开启=立即补跑；关闭=顺延到默认间隔。",
         "type": "bool",
         "default": true
       },
       "timezone": {
         "description": "时区",
-        "hint": "留空使用系统时区；也可填 Asia/Shanghai 这类 IANA 名称，影响提示词里的当前时间与作业时间解释。",
+        "hint": "留空用系统时区；可填 Asia/Shanghai。",
         "type": "string",
         "default": ""
       }
     }
   },
+  "hobby": {
+    "description": "爱好节奏",
+    "hint": "爱好作业（恒 1 个）循环创建：触发时读爱好记忆+近期流水，做完事写记忆（含下轮计划）再排下一次。",
+    "type": "object",
+    "items": {
+      "memory_count": {
+        "description": "爱好记忆条数",
+        "hint": "优先取带爱好标记的记忆，不足用关键词、再不足用近期记忆补满。（允许范围：0–100）",
+        "type": "int",
+        "default": 30,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        }
+      },
+      "flow_count": {
+        "description": "爱好周期流水条数",
+        "hint": "爱好轮注入的近期对话条数。（允许范围：0–100）",
+        "type": "int",
+        "default": 20,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 5
+        }
+      },
+      "memory_tag": {
+        "description": "爱好记忆标记",
+        "hint": "写记忆时带上的 topic，也是下次检索用的标签。",
+        "type": "string",
+        "default": "proactive_hobby"
+      },
+      "keywords": {
+        "description": "爱好关键词（逗号或换行分隔）",
+        "hint": "带标记记忆不足时，用它去记忆正文/标签里搜。",
+        "type": "text",
+        "default": "兴趣,爱好,喜欢,想学,想试,追,B站"
+      },
+      "min_interval_minutes": {
+        "description": "爱好最短间隔（分钟）",
+        "hint": "也是『她没给时间』时的随机下限。允许 0（=可能立刻）到 4320（3 天）。",
+        "type": "int",
+        "default": 30,
+        "slider": {
+          "min": 0,
+          "max": 4320,
+          "step": 15
+        }
+      },
+      "max_interval_minutes": {
+        "description": "爱好最长间隔（分钟）",
+        "hint": "也是『她没给时间』时的随机上限。默认 1440=1 天，最大 4320=3 天。",
+        "type": "int",
+        "default": 1440,
+        "slider": {
+          "min": 5,
+          "max": 4320,
+          "step": 15
+        }
+      },
+      "tool_whitelist": {
+        "description": "爱好轮可用工具（每行一个）",
+        "hint": "爱好周期只给这些工具；留空表示用通用白名单。",
+        "type": "text",
+        "default": "bilibili_read\nsearch_memes\nweb_search"
+      },
+      "auto_start": {
+        "description": "自动建立爱好节奏起点",
+        "hint": "已有会话若没有爱好作业，启动时按默认间隔补一个。",
+        "type": "bool",
+        "default": true
+      },
+      "scope_filter": {
+        "description": "记忆按人格/会话收窄",
+        "hint": "默认关闭（全库 active）；开启后只读当前人格/作用域的记忆。",
+        "type": "bool",
+        "default": false
+      }
+    }
+  },
+  "temp": {
+    "description": "临时提醒",
+    "hint": "用户点名的时间点（pmind_wake / 命令 / 面板）会创建临时作业，可多个、一次性、不循环。",
+    "type": "object",
+    "items": {
+      "max_jobs": {
+        "description": "临时作业上限",
+        "hint": "同一会话最多同时存在几个。（允许范围：1–50）",
+        "type": "int",
+        "default": 5,
+        "slider": {
+          "min": 1,
+          "max": 50,
+          "step": 1
+        }
+      },
+      "coalesce_seconds": {
+        "description": "同时到点的合并窗口（秒）",
+        "hint": "0=不合并，逐个跑。（允许范围：0–600）",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 600,
+          "step": 10
+        }
+      }
+    }
+  },
   "limit": {
-    "description": "用户没回话时的连续唤醒上限",
-    "hint": "统计『用户一直没回话的情况下，连续创建了多少次唤醒作业』。用户一说话计数就清零。",
+    "description": "连续唤醒上限",
+    "hint": "只约束『用户没回话时自动创建的对话/爱好作业』；临时提醒与手动操作不受限。",
     "type": "object",
     "items": {
       "max_consecutive_wakes": {
-        "description": "连续创建唤醒作业次数上限",
-        "hint": "取值范围 -1 ~ 100。-1=无限；0=用户没回话时不再创建唤醒作业；N>0=最多连续创建 N 次，超过就停下等用户先说话。当前计数可在面板查看与重置。",
+        "description": "连续创建上限",
+        "hint": "-1=无限；0=用户没回话时不再创建；N=最多连续 N 次。（允许范围：-1–100）",
         "type": "int",
         "default": 3,
-        "slider": {"min": -1, "max": 100, "step": 1}
+        "slider": {
+          "min": -1,
+          "max": 100,
+          "step": 1
+        }
       },
       "count_only_when_message_sent": {
-        "description": "只统计真的发了消息的唤醒",
-        "hint": "开启后，只在自己真的发了消息、调了工具的那次唤醒上累加计数；关闭则每次创建唤醒作业都算一次。",
+        "description": "只统计真的发了消息的周期",
+        "hint": "开启后，没发消息的周期不推进计数。",
         "type": "bool",
         "default": false
       }
@@ -148,120 +326,322 @@
   },
   "mind": {
     "description": "决策模型与工具",
-    "hint": "插件会用三次结构化调用完成『是否行动 → 调哪些工具 → 说什么 + 下次何时』，这里控制模型、超时与工具范围。",
+    "hint": "一轮只用一次人格、一次流水：先一次问全，有工具时在同一上下文再问一次定稿。",
     "type": "object",
     "items": {
       "decision_provider_id": {
         "description": "决策用模型（Provider ID）",
-        "hint": "留空=使用当前会话正在使用的 Provider；填写则固定用该 Provider 做判断（可填更便宜的模型）。",
+        "hint": "留空=当前会话 Provider。",
         "type": "string",
         "default": ""
       },
       "llm_timeout_seconds": {
         "description": "单次调用超时（秒）",
-        "hint": "每次结构化调用的最长等待时间，超时按失败降级处理。（允许范围：10–300）",
+        "hint": "（允许范围：10–300）",
         "type": "int",
         "default": 90,
-        "slider": {"min": 10, "max": 300, "step": 5}
+        "slider": {
+          "min": 10,
+          "max": 300,
+          "step": 5
+        }
+      },
+      "single_request": {
+        "description": "一轮只发一次请求",
+        "hint": "关闭（默认）：有工具时在同一上下文再问一次定稿；开启：工具结果只进记忆，消息用第一次的草稿。",
+        "type": "bool",
+        "default": false
       },
       "max_tool_calls": {
-        "description": "单次唤醒最多调用工具数",
-        "hint": "0=只思考与说话，不调工具；上限 8。工具按模型给出的顺序串行执行。（允许范围：0–8）",
+        "description": "单轮最多调用工具数",
+        "hint": "0=不调工具。（允许范围：0–8）",
         "type": "int",
         "default": 3,
-        "slider": {"min": 0, "max": 8, "step": 1}
+        "slider": {
+          "min": 0,
+          "max": 8,
+          "step": 1
+        }
       },
       "tool_whitelist": {
         "description": "工具白名单（每行一个）",
-        "hint": "留空=自动使用推荐集合（记忆召回/写入、bilibili_read、web_search 等已注册工具）。填写后只允许这些工具名。",
+        "hint": "留空=自动推荐集；爱好轮用 hobby.tool_whitelist。",
         "type": "text",
         "default": ""
       },
       "tool_blacklist": {
         "description": "工具黑名单（每行一个）",
-        "hint": "默认屏蔽 future_task（避免与插件自己的唤醒作业打架）、send_message_to_user（发消息统一由插件最后一步接管），以及 QQ 工具里的 qts_stop_conversation / qts_refresh_messages / qts_delete_message（回合控制与撤消息不适合自主执行）。",
+        "hint": "默认屏蔽 future_task、send_message_to_user 与 QQ 工具的回合控制/撤消息；另会默认剔除外部定时器（schedule 类）。",
         "type": "text",
         "default": "future_task\nsend_message_to_user\nqts_stop_conversation\nqts_refresh_messages\nqts_delete_message"
       },
       "tool_result_max_chars": {
-        "description": "工具结果回填字符上限",
-        "hint": "工具返回值回填给大模型的长度上限，超出截断。（允许范围：200–20000）",
+        "description": "工具结果回填上限（字符）",
+        "hint": "（允许范围：200–20000）",
         "type": "int",
         "default": 2000,
-        "slider": {"min": 200, "max": 20000, "step": 100}
+        "slider": {
+          "min": 200,
+          "max": 20000,
+          "step": 100
+        }
       },
       "persona_extra_instruction": {
         "description": "附加人设说明",
-        "hint": "追加在人设之后、只对主动心智生效的补充说明（例如『半夜少打扰』）。留空则只用人设本身。",
+        "hint": "追加在人设之后、只对主动心智生效。",
         "type": "text",
         "default": ""
+      },
+      "expose_wake_tool": {
+        "description": "把 pmind_wake 交给主 Agent",
+        "hint": "开启后主 Agent 可创建临时提醒（延时回复/到点叫醒），而不是原地 sleep。",
+        "type": "bool",
+        "default": true
+      },
+      "announce_wake_tool": {
+        "description": "在系统提示里说明延时规则",
+        "hint": "每次请求末尾追加一小段：延时动作要用 pmind_wake。",
+        "type": "bool",
+        "default": true
+      },
+      "catalog_max_entries": {
+        "description": "提示词里最多给几个工具",
+        "hint": "0=不限（跟随平台插件增减）；超出按相关性截断。（允许范围：0–200）",
+        "type": "int",
+        "default": 24,
+        "slider": {
+          "min": 0,
+          "max": 200,
+          "step": 1
+        }
+      },
+      "catalog_char_budget": {
+        "description": "工具目录字符预算",
+        "hint": "按分数从高到低装到预算为止；0=不限。（允许范围：0–60000）",
+        "type": "int",
+        "default": 8000,
+        "slider": {
+          "min": 0,
+          "max": 60000,
+          "step": 500
+        }
+      },
+      "tool_deny_pattern": {
+        "description": "额外剔除的工具名正则",
+        "hint": "默认只挡破坏性工具与自身工具（delete/kick/ban/shutdown/pmind_ 等）；留空=不额外剔除，黑名单仍生效。",
+        "type": "text",
+        "default": "(^|_)(delete|remove|drop|purge|wipe|truncate|unlink|kick|ban|mute)(_|$)|shutdown|future_task|manage_wake|pmind_|send_message_to_user"
+      },
+      "dialogue_execute": {
+        "description": "对话 job 由谁执行",
+        "hint": "main_agent=投递唤醒事件给主 Agent（含工具循环、人格、记忆、正则）；plugin=插件自己生成。",
+        "type": "string",
+        "options": [
+          "main_agent",
+          "plugin"
+        ],
+        "default": "main_agent"
+      },
+      "temp_execute": {
+        "description": "临时 job 由谁执行",
+        "hint": "同上；main_agent 时会带着备注唤醒主 Agent。",
+        "type": "string",
+        "options": [
+          "main_agent",
+          "plugin"
+        ],
+        "default": "main_agent"
+      },
+      "output_hint": {
+        "description": "每轮注入的结尾提醒（output_hint）",
+        "hint": "每次 LLM 请求都会附在用户消息后；留空=不注入。",
+        "type": "text",
+        "default": "说完在最后单独一行写 [[pmind_next:时间|话题]]，时间必须写具体的（+30m / +2h / 明天09:00 这种），话题是下次想说的话（≤20 字）；这行用户看不到。"
+      },
+      "wake_hint": {
+        "description": "到点唤醒轮的提示（wake_hint）",
+        "hint": "只在 pmind 到点唤醒那一轮注入；支持 {topic} / {since} / {kind} 占位符。",
+        "type": "text",
+        "default": "这是你自己到点醒来，没有人在跟你说话。\n上次留下的念头：{topic}\n距上次对话：{since}\n语气按你自己来，别像在回答提问；先想清楚要不要查/调工具，再开口。"
+      },
+      "provisional_enabled": {
+        "description": "交还主 Agent 时先垫保底时间",
+        "hint": "开启后，把 job 交给主 Agent 时先按『随机下限~上限』垫一个时间；她真回复了会覆盖，没回也不会变成未安排。",
+        "type": "bool",
+        "default": true
+      },
+      "delivery_guard_seconds": {
+        "description": "两次唤醒投递的最小间隔（秒）",
+        "hint": "防止保底 job 与真实到点重复唤醒；0=不限制。默认 90。",
+        "type": "int",
+        "default": 90,
+        "slider": {
+          "min": 0,
+          "max": 1800,
+          "step": 10
+        }
       }
     }
   },
   "memory": {
-    "description": "主动行为写入记忆",
-    "hint": "每次真正行动后，把自己『想了什么、做了什么、说了什么』写进长期记忆（调用 LivingMemory 的写入工具）。",
+    "description": "记忆写入",
+    "hint": "只有爱好周期自动写记忆（含下轮计划）；对话/临时由她自己调 memorize 工具决定。",
     "type": "object",
     "items": {
       "write_memory": {
         "description": "写入长期记忆",
-        "hint": "关闭后只写本地审计日志，不调用记忆工具。",
+        "hint": "关闭后只写本地审计日志。",
         "type": "bool",
         "default": true
       },
+      "mode": {
+        "description": "写入方式",
+        "hint": "仅作用于爱好周期：tool=调 memorize 工具（默认）；reflection=只 echo、靠反思；both=都做。对话/临时不受此项影响（由她自己调工具）。",
+        "type": "string",
+        "options": [
+          "tool",
+          "reflection",
+          "both"
+        ],
+        "default": "tool"
+      },
       "memory_importance": {
-        "description": "记忆重要性",
-        "hint": "0–1，越高越不容易被衰减清理。主动行为建议 0.6–0.85。（允许范围：0–1）",
+        "description": "对话/临时记忆重要性",
+        "hint": "仅用于外部调用/兼容；对话/临时不再自动写记忆。（允许范围：0–1）",
         "type": "float",
         "default": 0.7,
-        "slider": {"min": 0.0, "max": 1.0, "step": 0.01}
+        "slider": {
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.01
+        }
+      },
+      "hobby_importance": {
+        "description": "爱好记忆重要性",
+        "hint": "爱好轮计划要稳定存在，建议 0.75–0.9。（允许范围：0–1）",
+        "type": "float",
+        "default": 0.8,
+        "slider": {
+          "min": 0.0,
+          "max": 1.0,
+          "step": 0.01
+        }
       },
       "memory_tool_name": {
         "description": "记忆写入工具名",
-        "hint": "默认 memorize_long_term_memory（LivingMemory 开启『主动记忆写入工具』后注册）。",
+        "hint": "默认 memorize_long_term_memory。",
         "type": "string",
         "default": "memorize_long_term_memory"
       },
       "recall_tool_name": {
         "description": "记忆召回工具名",
-        "hint": "默认 recall_long_term_memory，会出现在模型可选的工具列表里。",
+        "hint": "默认 recall_long_term_memory。",
         "type": "string",
         "default": "recall_long_term_memory"
       }
     }
   },
+  "outbound": {
+    "description": "出站文本处理（模仿平台分段回复）",
+    "hint": "只影响主动心智发出的消息：先替换 → 再分段 → 再过滤。",
+    "type": "object",
+    "items": {
+      "replace_enabled": {
+        "description": "启用替换规则",
+        "type": "bool",
+        "default": true
+      },
+      "replace_rules": {
+        "description": "替换规则列表",
+        "hint": "每条形如 {pattern, replacement}：正则 → 替换文本。默认把中英文逗号换成 3 个空格。",
+        "type": "list",
+        "invisible": true,
+        "default": [
+          {
+            "pattern": "[，,]",
+            "replacement": "   "
+          }
+        ]
+      },
+      "segment_enabled": {
+        "description": "启用分段正则",
+        "hint": "按 re.findall(正则, 文本) 把一条回复拆成多条依次发送。",
+        "type": "bool",
+        "default": false
+      },
+      "segment_pattern": {
+        "description": "分段正则表达式",
+        "hint": "例如 [^。！？]+[。！？]? 会按句末标点切成多段；留空=不分段。",
+        "type": "string",
+        "default": ""
+      },
+      "segment_max": {
+        "description": "最多分几段",
+        "hint": "超出部分合并到最后一段，不丢字。（允许范围：1–20）",
+        "type": "int",
+        "default": 4,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
+      },
+      "segment_interval": {
+        "description": "分段间隔（秒）",
+        "hint": "每段之间的停顿。（允许范围：0–30）",
+        "type": "float",
+        "default": 0.6,
+        "slider": {
+          "min": 0.0,
+          "max": 30.0,
+          "step": 0.1
+        }
+      },
+      "cleanup_enabled": {
+        "description": "启用内容过滤正则",
+        "type": "bool",
+        "default": false
+      },
+      "cleanup_pattern": {
+        "description": "内容过滤正则表达式",
+        "hint": "删掉每段里匹配到的内容，例如 [。！？] 会去掉句末标点；留空=不过滤。",
+        "type": "string",
+        "default": ""
+      }
+    }
+  },
   "echo": {
-    "description": "主动消息落库（平台历史 / LivingMemory）",
-    "hint": "默认把发出去的主动消息写回对话流水，并标记为『Bot 自己说的』，让记忆系统正常反思并写入记忆数据库。",
+    "description": "主动消息落库",
+    "hint": "把主动消息写回平台历史与 LivingMemory 会话库，并标记为 Bot 自己说的。",
     "type": "object",
     "items": {
       "persist_proactive_to_platform_history": {
         "description": "写回 AstrBot 平台对话历史",
-        "hint": "以 assistant 记录追加到当前会话历史，下一轮主 Agent 会把它当作自己说过的话。写入后会回读校验。",
+        "hint": "以 assistant 记录追加，写入后回读校验。",
         "type": "bool",
         "default": true
       },
       "persist_proactive_to_livingmemory": {
         "description": "写回 LivingMemory 会话库",
-        "hint": "以 role=assistant、is_bot_message=true、Bot 自身 ID 写入其 conversations.db，使其反思摘要正确归因为『Bot 说的』并进入记忆数据库。",
+        "hint": "role=assistant + is_bot_message=true，交给它反思入库。",
         "type": "bool",
         "default": true
       },
       "livingmemory_write_trigger_reflection": {
-        "description": "写入后催一次记忆反思",
-        "hint": "默认关闭（跟随 LivingMemory 自己的总结节奏）。开启会在写入后尝试调用其反思流程；失败只告警。",
+        "description": "写入后催一次反思",
+        "hint": "默认关闭，跟随它的节奏。",
         "type": "bool",
         "default": false
       },
       "echo_bot_name": {
         "description": "Bot 昵称（落库用）",
-        "hint": "留空自动解析（优先取最近事件里的 self_id/昵称，其次取该会话最后一条 assistant 记录的身份）。",
+        "hint": "留空自动解析。",
         "type": "string",
         "default": ""
       },
       "dedupe_echo_in_flow": {
         "description": "流水去重",
-        "hint": "开启后，若流水末尾已经包含自己刚发的那条消息，就不再重复注入插件自己记录的一份。",
+        "hint": "流水末尾已有自己刚发的消息时不再重复注入。",
         "type": "bool",
         "default": true
       }
@@ -269,41 +649,78 @@
   },
   "message": {
     "description": "消息发送",
-    "hint": "主动消息的统一出口设置。",
+    "hint": "",
     "type": "object",
     "items": {
       "max_message_chars": {
         "description": "单条主动消息字符上限",
-        "hint": "超出会被截断（不会拆分成多条）。（允许范围：100–4000）",
+        "hint": "超出截断。（允许范围：100–4000）",
         "type": "int",
         "default": 800,
-        "slider": {"min": 100, "max": 4000, "step": 50}
+        "slider": {
+          "min": 100,
+          "max": 4000,
+          "step": 50
+        }
       },
       "allow_empty_message": {
         "description": "允许只做事不发消息",
-        "hint": "开启后模型可以决定只说『不打扰』、只做别的事（刷视频、回忆、整理记忆），此时不发消息但仍写记忆与安排下次唤醒。",
+        "hint": "关闭后模型必须说话（不推荐）。",
         "type": "bool",
         "default": true
       }
     }
   },
+  "panel": {
+    "description": "面板显示",
+    "hint": "只影响视图，不影响决策。",
+    "type": "object",
+    "items": {
+      "stale_hours": {
+        "description": "『上次主动消息』过期提示（小时）",
+        "hint": "超过该时长在面板上标成『很久没主动说过话』。（允许范围：0–720）",
+        "type": "float",
+        "default": 6.0,
+        "slider": {
+          "min": 0.0,
+          "max": 720.0,
+          "step": 1.0
+        }
+      },
+      "trace_similarity": {
+        "description": "疑似复读相似度阈值",
+        "hint": "相邻两条判断相似度 ≥ 该值时在轨迹上标『疑似复读』。（允许范围：0.5–1）",
+        "type": "float",
+        "default": 0.85,
+        "slider": {
+          "min": 0.5,
+          "max": 1.0,
+          "step": 0.01
+        }
+      }
+    }
+  },
   "debug": {
     "description": "调试",
-    "hint": "排查用，正常使用保持默认即可。",
+    "hint": "",
     "type": "object",
     "items": {
       "debug_log_prompts": {
-        "description": "日志打印完整提示词",
-        "hint": "开启后会把三次调用的提示词与原始返回写进日志（信息量大，注意隐私）。",
+        "description": "日志打印提示词",
+        "hint": "开启后记录 system 与消息条数（注意隐私）。",
         "type": "bool",
         "default": false
       },
       "trace_keep": {
-        "description": "保留的决策轨迹条数",
-        "hint": "面板上『最近决策轨迹』最多保留多少条，越多占用状态文件越大。（允许范围：5–200）",
+        "description": "保留轨迹条数",
+        "hint": "（允许范围：5–200）",
         "type": "int",
         "default": 30,
-        "slider": {"min": 5, "max": 200, "step": 5}
+        "slider": {
+          "min": 5,
+          "max": 200,
+          "step": 5
+        }
       }
     }
   }

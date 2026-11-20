@@ -208,6 +208,26 @@ async def chat_json(
     Returns:
         ``(data, raw_text, errors)``；data 为 None 表示彻底失败。
     """
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    return await chat_json_messages(context, settings, umo, messages=messages, log=log)
+
+
+async def chat_json_messages(
+    context,
+    settings,
+    umo: str,
+    *,
+    messages: list[dict[str, Any]],
+    log: logging.Logger | None = None,
+) -> tuple[dict[str, Any] | None, str, list[str]]:
+    """在同一份消息列表上请求 JSON 输出（列表本身只构造一次）。
+
+    ``messages`` 里第一条 role=system 会作为 provider 的 system_prompt，
+    其余按顺序作为 contexts——这样"人格/流水"在整轮里只出现一次。
+    """
     log = log or logging.getLogger(LOGGER_NAME)
     errors: list[str] = []
     provider = await resolve_provider(context, settings, umo, log)
@@ -215,31 +235,59 @@ async def chat_json(
         errors.append("provider_unavailable")
         return None, "", errors
 
+    system_prompt = ""
+    contexts: list[dict[str, Any]] = []
+    for message in messages or []:
+        role = str(message.get("role") or "user")
+        content = message.get("content") or ""
+        if role == "system" and not system_prompt:
+            system_prompt = str(content)
+        else:
+            contexts.append({"role": role, "content": content})
+
     timeout = float(settings.llm_timeout_seconds)
-    prompt = user_prompt
     raw = ""
     for attempt in range(2):
+        if attempt:
+            contexts = list(contexts)
+            contexts.append({"role": "user", "content": JSON_ONLY_REMINDER.strip()})
         if settings.debug_log_prompts:
-            log.info(f"[proactive_mind] (attempt {attempt + 1}) prompt:\n{prompt}")
-        text, error = await chat(
-            provider,
-            system_prompt=system_prompt,
-            user_prompt=prompt,
-            timeout=timeout,
-        )
-        if error:
-            errors.append(error)
-            if error == "timeout" and attempt == 0:
+            log.info(
+                f"[proactive_mind] (messages attempt {attempt + 1}) "
+                f"system={system_prompt[:200]!r} contexts={len(contexts)}"
+            )
+        try:
+            response = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt=None,
+                    system_prompt=system_prompt,
+                    contexts=contexts,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            errors.append("timeout")
+            continue
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"error: {exc}")
+            # 网络抖动（Connection error 之类）重试一次再放弃
+            if attempt == 0:
+                await asyncio.sleep(1.5)
                 continue
             return None, raw, errors
+        text = ""
+        completion = getattr(response, "completion_text", None)
+        if completion:
+            text = str(completion)
+        elif response is not None:
+            text = str(response)
         raw = text
         if settings.debug_log_prompts:
-            log.info(f"[proactive_mind] (attempt {attempt + 1}) raw: {text[:MAX_RAW_KEEP]}")
+            log.info(f"[proactive_mind] raw: {text[:MAX_RAW_KEEP]}")
         data = extract_json(text)
         if data is not None:
             return data, text, errors
         errors.append("invalid_json")
-        prompt = user_prompt + JSON_ONLY_REMINDER
     return None, raw, errors
 
 

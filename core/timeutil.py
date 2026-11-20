@@ -14,6 +14,12 @@ _MONTH_DAY_RE = re.compile(r"^(\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{
 
 _WEEKDAY_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
+_REL_COMPOUND_RE = re.compile(
+    r"^\+?\s*(?:(\d+(?:\.\d+)?)\s*(?:个?\s*天|个?\s*日|d)\s*)?"
+    r"(?:(\d+(?:\.\d+)?)\s*(?:个?\s*(?:小时|钟头)|h|hr|hrs|hour|hours)\s*)?"
+    r"(?:(\d+(?:\.\d+)?)\s*(?:分钟|分|m|min|mins|minute|minutes)?\s*)?$",
+    re.I,
+)
 _REL_UNITS = {
     "s": 1,
     "sec": 1,
@@ -123,6 +129,22 @@ def parse_wake_time(value, *, reference: datetime, tz=None) -> datetime | None:
         return None
     text = text.replace("T", " ") if " " not in text and "T" in text else text
 
+    # 复合相对量：2h30m / 2小时30分 / +1h45 / 1天2小时
+    compound = _REL_COMPOUND_RE.match(text)
+    if compound:
+        day_part, hour_part, minute_part = compound.groups()
+        if any(part is not None for part in (day_part, hour_part, minute_part)):
+            total = timedelta()
+            for amount, unit_seconds in (
+                (day_part, 86400),
+                (hour_part, 3600),
+                (minute_part, 60),
+            ):
+                if amount is not None:
+                    total += timedelta(seconds=float(amount) * unit_seconds)
+            if total:
+                return reference + total
+
     # 相对量
     match = _REL_RE.match(text)
     if match:
@@ -224,9 +246,97 @@ def plus_minutes(value: datetime, minutes: int) -> datetime:
     return value + timedelta(minutes=int(minutes))
 
 
+def explicit_target(
+    when: datetime | None,
+    *,
+    now: datetime,
+    max_minutes: int,
+    min_seconds: int = 5,
+    delay_minutes: int | None = None,
+) -> datetime | None:
+    """把「显式指定的时间点」规范化（主 Agent 用 pmind_wake 排的唤醒）。
+
+    与自主判断的区别：这里**不套用最短间隔**（用户说 2 分钟就是 2 分钟），
+    只保证不早于 ``now+min_seconds``、不晚于 ``now+max_minutes``；
+    ``delay_minutes`` 仅用于"本会话延后覆盖"，全局延后不参与。
+
+    Args:
+        when: 目标时间点（可为 naive，按 now 的时区解释）。
+        now: 当前时间。
+        max_minutes: 最远允许多少分钟。
+        min_seconds: 最近允许多少秒（避免立刻触发）。
+        delay_minutes: 本会话的延后覆盖（分钟），None 表示不延后。
+
+    Returns:
+        规范化后的时间点；``when`` 为 None 时返回 None。
+    """
+    if when is None:
+        return None
+    target = when
+    if target.tzinfo is None:
+        target = target.replace(tzinfo=now.tzinfo)
+    floor = now + timedelta(seconds=max(1, int(min_seconds)))
+    if target < floor:
+        target = floor
+    ceiling = now + timedelta(minutes=max(1, int(max_minutes)))
+    if target > ceiling:
+        target = ceiling
+    if delay_minutes:
+        try:
+            target = target + timedelta(minutes=max(0, int(delay_minutes)))
+        except (TypeError, ValueError):
+            pass
+    return target
+
+
 def now_iso(tz=None) -> str | None:
     """当前时间 ISO 字符串。"""
     return iso(now(tz))
+
+
+# ----------------------------------------------------------------------
+# 回复里的"下次时间"标记（供主 Agent 用，装饰阶段会被抠掉，用户看不到）
+# ----------------------------------------------------------------------
+NEXT_MARKER_PATTERN = re.compile(
+    r"\[\[\s*pmind[_-]?next\s*[:：]\s*([^\[\]]{1,64}?)\s*\]\]",
+    re.IGNORECASE,
+)
+
+
+def split_marker(value: str) -> tuple[str, str]:
+    """拆开 ``时间|话题``（支持全角竖线）。
+
+    Returns:
+        ``(时间串, 话题)``；没有竖线时话题为空。
+    """
+    text = str(value or "").strip()
+    for sep in ("|", "｜", "¦"):
+        if sep in text:
+            head, _, tail = text.partition(sep)
+            return head.strip(), tail.strip()
+    return text, ""
+
+
+def strip_next_marker(text: str) -> tuple[str, str | None]:
+    """删除 ``[[pmind_next:+90m]]`` 标记。
+
+    Returns:
+        ``(清理后的文本, 标记里的原始时间值)``；有多个标记时取最后一个。
+    """
+    if not text or "pmind" not in text.lower():
+        return text, None
+    found: list[str] = []
+
+    def _take(match: re.Match[str]) -> str:
+        found.append(match.group(1).strip())
+        return ""
+
+    cleaned = NEXT_MARKER_PATTERN.sub(_take, text)
+    if not found:
+        return text, None
+    # 标记被删掉后可能留下多余空白
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned).strip()
+    return cleaned, found[-1]
 
 
 def utc_iso(value: datetime | None) -> str | None:

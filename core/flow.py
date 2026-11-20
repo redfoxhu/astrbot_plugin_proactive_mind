@@ -24,6 +24,16 @@ LOGGER_NAME = "astrbot"
 BOT_LABEL = "我（Bot）"
 USER_LABEL = "用户"
 PROACTIVE_LABEL = "我（主动发出）"
+SYSTEM_LABEL = "系统唤醒"
+
+# 其他插件/调度器插入的"伪用户消息"（如 QQ 工具的主动唤醒），不是用户真的说话
+SYSTEM_NOTE_PREFIXES = ("[系统唤醒]", "[系统]", "[system wake]", "[SystemWake]")
+
+
+def is_system_note(text: str) -> bool:
+    """判断一条流水是不是别的调度器塞进来的系统唤醒备注。"""
+    stripped = str(text or "").strip()
+    return any(stripped.startswith(prefix) for prefix in SYSTEM_NOTE_PREFIXES)
 
 
 @dataclass
@@ -37,10 +47,13 @@ class FlowItem:
     is_bot: bool = False
     sender: str | None = None
     proactive: bool = False
+    system: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
     def speaker(self) -> str:
         """用于提示词的说话人标签。"""
+        if self.system:
+            return SYSTEM_LABEL
         if self.proactive:
             return PROACTIVE_LABEL
         if self.is_bot or self.role == "assistant":
@@ -130,6 +143,7 @@ def records_to_items(records: Any, *, source: str = "platform") -> list[FlowItem
                 ts=record.get("timestamp") if isinstance(record.get("timestamp"), (int, float)) else None,
                 source=source,
                 is_bot=role == "assistant",
+                system=role != "assistant" and is_system_note(text),
                 extra={"raw_role": role},
             )
         )
@@ -189,6 +203,7 @@ def rows_to_items(rows: Any, *, source: str = "livingmemory") -> list[FlowItem]:
                 is_bot=is_bot,
                 sender=str(sender_name or sender_id) if (sender_name or sender_id) else None,
                 proactive=_truthy(meta.get("proactive_mind")),
+                system=(not is_bot) and is_system_note(text),
                 extra=meta,
             )
         )
@@ -223,6 +238,12 @@ def format_flow(items: list[FlowItem], max_chars: int = 12000) -> str:
         text = sanitize_text(item.text).replace("\r", " ").strip()
         if not text:
             continue
+        if item.system:
+            # 别的调度器的唤醒备注：明确标成"系统"，别让模型当成用户刚说的话
+            for prefix in SYSTEM_NOTE_PREFIXES:
+                if text.startswith(prefix):
+                    text = text[len(prefix) :].strip()
+                    break
         stamp = ""
         if item.ts:
             try:
@@ -308,6 +329,52 @@ async def _read_livingmemory(context, settings, umo: str, log):
     if manager is None:
         return [], "livingmemory_not_ready"
     items: list[FlowItem] = []
+
+    # ⚠ 关键：必须绕过 ConversationManager 的 LRU 缓存。
+    # 它的缓存按"上一次查询的 limit"落库（core/managers/conversation_manager.py:537），
+    # 而 LivingMemory 自己的空闲检测会调 get_messages(limit=2)
+    # （core/event_handler_modules/memory_reflection.py:73），于是缓存里只剩 2 条，
+    # 之后任何 get_context(50) 都只返回这 2 条 —— 表现为"流水突然只剩 1~2 条"。
+    get_messages = getattr(manager, "get_messages", None)
+    if callable(get_messages):
+        messages = None
+        try:
+            messages = await get_messages(umo, limit=window, use_cache=False)
+        except TypeError:
+            # 老版本没有 use_cache 参数：退化成不带缓存语义的调用
+            try:
+                messages = await get_messages(umo, limit=window)
+            except Exception as exc:
+                log.warning(f"[proactive_mind] 读取 LivingMemory 消息失败: {exc}")
+        except Exception as exc:
+            log.warning(f"[proactive_mind] 读取 LivingMemory 消息失败: {exc}")
+        if messages:
+            for message in messages:
+                role = str(getattr(message, "role", "user"))
+                text = content_to_text(getattr(message, "content", ""))
+                if not text.strip():
+                    continue
+                metadata = getattr(message, "metadata", None) or {}
+                is_bot = bool(metadata.get("is_bot_message")) or role == "assistant"
+                items.append(
+                    FlowItem(
+                        role=role,
+                        text=text.strip(),
+                        ts=getattr(message, "timestamp", None),
+                        source="livingmemory",
+                        is_bot=is_bot,
+                        sender=getattr(message, "sender_name", None),
+                        system=is_system_note(text),
+                    )
+                )
+            if len(items) < max(3, window // 4):
+                log.warning(
+                    f"[proactive_mind] LivingMemory 只返回 {len(items)} 条（期望 {window}），"
+                    "可能仍命中短缓存；已按实际条数继续"
+                )
+            return items[-window:], "livingmemory"
+
+    # 兜底：没有 get_messages 的版本才走 get_context（可能被短缓存影响）
     getter = getattr(manager, "get_context", None)
     if callable(getter):
         try:
@@ -326,43 +393,11 @@ async def _read_livingmemory(context, settings, umo: str, log):
                             text=text.strip(),
                             source="livingmemory",
                             is_bot=role == "assistant",
+                            system=is_system_note(text),
                         )
                     )
         except Exception as exc:
             log.warning(f"[proactive_mind] 读取 LivingMemory 上下文失败: {exc}")
-    if not items:
-        get_messages = getattr(manager, "get_messages", None)
-        if callable(get_messages):
-            try:
-                messages = await get_messages(umo, limit=window)
-                for message in messages or []:
-                    role = str(getattr(message, "role", "user"))
-                    text = content_to_text(getattr(message, "content", ""))
-                    if not text.strip():
-                        continue
-                    metadata = getattr(message, "metadata", {}) or {}
-                    items.append(
-                        FlowItem(
-                            role=role,
-                            text=text.strip(),
-                            ts=getattr(message, "timestamp", None),
-                            source="livingmemory",
-                            is_bot=role == "assistant"
-                            or _truthy(
-                                metadata.get("is_bot_message")
-                                if isinstance(metadata, dict)
-                                else False
-                            ),
-                            sender=getattr(message, "sender_name", None),
-                            proactive=_truthy(
-                                metadata.get("proactive_mind")
-                                if isinstance(metadata, dict)
-                                else False
-                            ),
-                        )
-                    )
-            except Exception as exc:
-                log.warning(f"[proactive_mind] 读取 LivingMemory 消息失败: {exc}")
     if items:
         return items[-window:], "livingmemory"
     sqlite_items = await _read_livingmemory_sqlite(settings, umo, log)
@@ -489,6 +524,20 @@ async def read_flow(context, settings, umo: str, log: logging.Logger | None = No
         return items, used, warnings
     warnings.append(f"平台流水不可用（{used}）")
     return [], used, warnings
+
+
+def drop_old(items: list[FlowItem], max_age_hours: float, *, now_ts: float | None = None) -> list[FlowItem]:
+    """丢掉超过 max_age_hours 的旧流水（0 表示不过滤）。
+
+    目的：避免隔夜旧话题（例如某句未结账的话）在 50 条窗口里反复锚定模型。
+    """
+    if not max_age_hours or max_age_hours <= 0:
+        return items
+    import time as _time
+
+    cutoff = (now_ts if now_ts is not None else _time.time()) - float(max_age_hours) * 3600
+    kept = [item for item in items if item.ts is None or float(item.ts) >= cutoff]
+    return kept
 
 
 def merge_proactive(items: list[FlowItem], session: dict[str, Any], settings) -> list[FlowItem]:

@@ -12,49 +12,161 @@
       <span class="tag" id="version">v-</span>
       <span class="tag" id="enabled-tag">-</span>
       <span class="tag" id="lm-tag">LivingMemory: -</span>
+      <span class="tag" id="flow-tag">流水 -</span>
     </header>
     <div class="sub" id="runtime">正在连接 AstrBot…</div>
 
+    <div class="panel-row">
     <section class="panel">
       <h2 style="margin-top: 0">全局节奏</h2>
       <div class="grid">
         <label class="field">
-          <span>唤醒时间自动延后（分钟）</span>
-          <input id="cfg-delay" type="number" min="0" max="1440" step="1" />
+          <span>对话间隔区间（分钟）：她给的时间会被夹在这里，没给时间就在这之间随机</span>
+          <div style="display: flex; gap: 6px">
+            <input id="cfg-random-min" type="number" min="0" max="1440" step="5" placeholder="下限" />
+            <input id="cfg-random-max" type="number" min="1" max="1440" step="5" placeholder="上限" />
+          </div>
         </label>
         <label class="field">
-          <span>用户没回话时的连续唤醒上限（-1=无限，0=不再创建）</span>
+          <span>爱好间隔区间（分钟）：她给的时间会被夹在这里，没给时间就在这之间随机</span>
+          <div style="display: flex; gap: 6px">
+            <input id="cfg-hobby-min" type="number" min="0" max="4320" step="15" placeholder="下限" />
+            <input id="cfg-hobby-max" type="number" min="5" max="4320" step="15" placeholder="上限" />
+          </div>
+        </label>
+        <label class="field">
+          <span>爱好记忆条数 / 流水条数</span>
+          <div style="display: flex; gap: 6px">
+            <input id="cfg-hobby-mem" type="number" min="0" max="100" step="5" />
+            <input id="cfg-hobby-flow" type="number" min="0" max="100" step="5" />
+          </div>
+        </label>
+        <label class="field">
+          <span>连续创建上限（-1=无限）</span>
           <input id="cfg-cap" type="number" min="-1" max="100" step="1" />
         </label>
         <label class="field">
-          <span>用户发言后的判断模式</span>
-          <select id="cfg-mode">
-            <option value="decide">decide（完整决策）</option>
-            <option value="schedule_only">schedule_only（只重排时间）</option>
+          <span>流水最长回溯（小时）</span>
+          <input id="cfg-flow-age" type="number" min="0" max="720" step="1" />
+        </label>
+        <label class="field">
+          <span>临时作业上限</span>
+          <input id="cfg-temp-max" type="number" min="1" max="50" step="1" />
+        </label>
+        <label class="field">
+          <span>一轮只发一次请求</span>
+          <select id="cfg-single">
+            <option value="false">否（有工具时再定稿一次）</option>
+            <option value="true">是（工具结果只进记忆）</option>
           </select>
         </label>
         <label class="field">
-          <span>最短 / 最长间隔（分钟）</span>
-          <div style="display: flex; gap: 6px">
-            <input id="cfg-min" type="number" min="1" max="1440" step="1" />
-            <input id="cfg-max" type="number" min="5" max="10080" step="1" />
-          </div>
+          <span>记忆写入方式</span>
+          <select id="cfg-mem-mode">
+            <option value="tool">tool（调 memorize）</option>
+            <option value="reflection">reflection（靠反思）</option>
+            <option value="both">both</option>
+          </select>
         </label>
       </div>
       <div class="actions">
-        <button class="primary" id="btn-save-cfg">保存节奏设置</button>
+        <button class="primary" id="btn-save-cfg">保存全局设置</button>
         <button class="ghost" id="btn-refresh">刷新</button>
       </div>
     </section>
 
-    <h2>会话与唤醒作业</h2>
+    <section class="panel panel-hints">
+      <h2 style="margin-top: 0">提示词（可改，可恢复默认）</h2>
+      <div class="sub" style="margin-bottom: 8px">
+        output_hint = 每一轮都注入（提醒她结尾给时间+话题）；wake_hint = 只在到点唤醒那一轮注入（说明这是她自己醒来）。
+        支持占位符 <code>{topic}</code> / <code>{since}</code> / <code>{kind}</code>。
+      </div>
+      <div class="grid grid-2">
+        <div class="field">
+          <span>output_hint（每轮注入）</span>
+          <textarea id="cfg-output-hint" rows="5" style="width: 100%"></textarea>
+          <div class="actions">
+            <button class="primary" id="btn-save-output-hint">保存</button>
+            <button class="ghost" id="btn-reset-output-hint">恢复默认</button>
+          </div>
+        </div>
+        <div class="field">
+          <span>wake_hint（仅到点唤醒轮）</span>
+          <textarea id="cfg-wake-hint" rows="5" style="width: 100%"></textarea>
+          <div class="actions">
+            <button class="primary" id="btn-save-wake-hint">保存</button>
+            <button class="ghost" id="btn-reset-wake-hint">恢复默认</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2 style="margin-top: 0">出站文本处理</h2>
+      <div class="sub" style="margin-bottom: 6px">
+        只影响本插件发出的主动消息：<b>先替换 → 再分段 → 再过滤</b>。
+      </div>
+      <div class="grid grid-3">
+        <label class="field">
+          <span>启用替换</span>
+          <select id="cfg-out-replace">
+            <option value="true">启用</option>
+            <option value="false">停用</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>启用分段</span>
+          <select id="cfg-out-segment">
+            <option value="false">停用</option>
+            <option value="true">启用</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>启用内容过滤</span>
+          <select id="cfg-out-cleanup">
+            <option value="false">停用</option>
+            <option value="true">启用</option>
+          </select>
+        </label>
+      </div>
+      <label class="field" style="margin-top: 6px">
+        <span>替换规则（每行 <code>正则=&gt;替换文本</code>）</span>
+        <textarea id="cfg-out-rules" rows="2" style="width: 100%"></textarea>
+      </label>
+      <div class="grid grid-3" style="margin-top: 6px">
+        <label class="field">
+          <span>分段正则（re.findall）</span>
+          <input id="cfg-out-seg-pattern" type="text" placeholder="[^。！？]+[。！？]?" />
+        </label>
+        <label class="field">
+          <span>最多段数 / 间隔（秒）</span>
+          <div style="display: flex; gap: 6px">
+            <input id="cfg-out-seg-max" type="number" min="1" max="20" step="1" />
+            <input id="cfg-out-seg-interval" type="number" min="0" max="30" step="0.1" />
+          </div>
+        </label>
+        <label class="field">
+          <span>内容过滤正则</span>
+          <input id="cfg-out-cleanup-pattern" type="text" placeholder="[。！？]" />
+        </label>
+      </div>
+      <div class="actions">
+        <button class="primary" id="btn-save-outbound">保存出站设置</button>
+        <input id="cfg-out-preview-text" type="text" placeholder="预览：输入一段话" style="min-width: 200px" />
+        <button class="ghost" id="btn-preview-outbound">预览</button>
+      </div>
+      <div id="outbound-preview" class="sub"></div>
+    </section>
+
+    </div>
+
+    <h2>会话与三类作业</h2>
     <div id="sessions"><div class="empty">正在读取…</div></div>
 
     <h2>最近决策轨迹</h2>
     <div id="traces"><div class="empty">正在读取…</div></div>
 
     <div id="toast"></div>
-    <!-- 宿主会把这一行重写成带 asset_token 的地址，必须先于页面脚本加载 -->
     <script src="/api/plugin/page/bridge-sdk.js"></script>
     <script type="module" src="./app.js"></script>
   </body>

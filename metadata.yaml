@@ -1,7 +1,7 @@
 name: astrbot_plugin_proactive_mind
 display_name: 主动心智 Proactive Mind
 author: redfoxhu
-version: 0.1.0
+version: 0.5.0
 desc: 让机器人按人格与最近对话流水自主判断"是否唤醒、何时唤醒、唤醒时调用哪些工具做什么、要不要说话"，由插件持有并展示唯一的唤醒作业；主动消息默认写回平台对话历史与 LivingMemory 会话库，交给记忆系统正常反思入库。
 short_desc: 自主唤醒与主动行为的决策、执行与唤醒作业面板
 astrbot_version: ">=4.24.0,<5"

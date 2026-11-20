@@ -1,158 +1,176 @@
 # 主动心智 Proactive Mind
 
 让 AstrBot 的机器人**自己决定**要不要主动、什么时候再醒、醒了之后干什么、要不要说话。
-插件持有唯一的「下次唤醒作业」，并把每一次主动行为的**思考过程与实际动作**写进长期记忆；
-发出的主动消息默认同时写回 **AstrBot 平台对话历史** 与 **LivingMemory 会话库**（标记为 Bot 自己说的），
-这样记忆插件的反思摘要能正确归因并进入记忆数据库。
+v0.5 起按 **对话 / 爱好 / 临时** 三类作业管理节奏，一轮决策只在**同一个上下文**里注入一次人格、一次流水。
 
-- 插件名：`astrbot_plugin_proactive_mind`
-- 版本：`0.1.0`
-- 适配：AstrBot `>= 4.24.0, < 5`（在 4.29.4 实机验证）
-- 依赖：无第三方包（复用宿主自带的 APScheduler / LivingMemory 已注册工具）
+- 插件名：`astrbot_plugin_proactive_mind`　版本：`0.5.0`
+- 适配：AstrBot `>= 4.24.0, < 5`（4.29.4 实机验证）
+- 依赖：无第三方包
 
 ---
 
-## 1. 它怎么工作
+## 1. 三类作业
 
-一次决策（`core/decide.py`）分三段，全部要求模型输出 JSON：
+| 类型 | 数量 | 触发时的上下文 | 触发后 |
+| --- | --- | --- | --- |
+| **对话** | 恒 1 | 人格 + LivingMemory 流水（默认 50 条） | **触发就必须更新**：到点/用户消息后一定排下一次（时间来自回复标记 > 模型 > 默认间隔） |
+| **爱好** | 恒 1 | 人格 + 爱好记忆（默认 30 条）+ 近期流水（默认 20 条） | 做事 → 写记忆（本轮总结 + 下轮计划）→ 排下一个（循环） |
+| **临时** | 0..N | 人格 + 流水 + 备注 | 只执行一次，**不重建** |
+
+- 用户消息触发的周期 **等同于对话节奏**。
+- `basic.user_message_mode=record_only`（A 模式）：主 Agent 的回复**就是**这次对话 job 的执行体，插件这一轮只记账（更新作业/按需写记忆），**永不补话** → 一条用户消息只回一条。
+- 下次时间靠三处，按优先级：回复末尾的 `[[pmind_next:+90m]]` 标记（发送前被抠掉，用户看不到）→ 模型 JSON 里的 `dialogue_next_at` → `wake.default_interval_minutes` 兜底。
+- 作业 id：`pmind:<umo>:dialogue|hobby|temp:<id>`；重启后按 `jobs` 恢复，过期按配置补跑/顺延。
+- 所有作业的**创建**都在周期最后一步（发送 → 落库 → 写记忆 → 排作业）。
+
+## 2. 一轮是怎么跑的（单上下文）
 
 ```
-人格 + 最近流水 + 状态
-        │
-   ① gate：要不要主动？
-        │否 → 只把「下次唤醒时间」交给插件，静默结束
-        │是
-   ② plan：要调用哪些工具、做什么（可一串，串行执行）
-        │
-   ③ compose：要说的话（可为 null）+ 把「流水 + 即将发出的这条消息」一起判断下次唤醒时间
-        │
-   发送 → 平台历史落库 + LivingMemory 落库 → 写记忆 → 创建/替换唯一的唤醒作业
+messages = [ system: 人格+规则 ,  user: 状态块 + 上下文块 + 输出格式 ]
+① 一次调用：act / reason / thought / steps / message（草稿）/ memory / 下次时间
+② 若有工具：执行 → 在同一份 messages 末尾追加工具结果 → 再问一次「定稿 message」
+   （mind.single_request=true 时跳过②，直接用草稿）
+③ 发送 → 落库（平台历史 + LivingMemory）→ 写记忆 → 创建/更新作业
 ```
+`trace.context_stats` 会记录 `{requests, persona_units, flow_units}`，可在面板轨迹上直接看到"请求 1~2 次 · 人格 1 · 流水 1"。
 
-触发来源：
+## 3. 记忆：用 LivingMemory 自己的总结模式
 
-| 触发 | 说明 |
-| --- | --- |
-| `cron` | 唤醒作业到点（插件自持调度器，一次性 `DateTrigger`） |
-| `user_message` | 用户消息、机器人回复发出后触发（带防抖 + 延迟，等流水落库；可设为只重排时间） |
-| `manual` / `page` | `/mind run` 或面板「立即跑一次」 |
+- 插件**不再拼** `【主动行为｜…】` 模板；模型输出字段 `memory`（自然语言），原样交给 `memorize_long_term_memory`，由它的 `build_memory_from_structured_data → _build_storage_format` 规范化。
+- **只有爱好周期自动写记忆**（本轮总结 + 下轮计划，创建下一个爱好作业之前写）。
+- **对话 / 临时周期不自动写**：需要留记忆时，由她自己决定调用 `memorize_long_term_memory` 工具；轨迹里会记 `by: model_tool`（调了）或 `reason: model_decides`（没调）。
+- `memory.mode`：`tool`（默认）｜`reflection`（不调工具，只靠 echo 后的反思）｜`both`——只作用于爱好周期。
+- topics：`proactive_mind`、`trigger:<kind>`；爱好额外带 `proactive_hobby`（也是下次检索的标记）。
 
-不行动时：**不发消息、不写记忆**，只更新下次唤醒时间与轨迹。
+## 4. 爱好记忆怎么取
 
-行动时：允许「只做事不发消息」（刷视频、回忆、整理记忆），但**一定会把思考与动作写进记忆**。
+1. `documents.metadata.topics` 含 `proactive_hobby`（近 30 条，`hobby.memory_count`）；
+2. 不足 → 按 `hobby.keywords`（兴趣/爱好/喜欢/想学…）搜正文与标签；
+3. 仍不足 → 用近期记忆补满；
+4. 再加 `hobby.flow_count` 条近期流水。
 
-## 2. 安装
+只读 `livingmemory.db`，不写任何东西；失败降级为空列表，不影响周期。
 
-1. 把整个 `astrbot_plugin_proactive_mind/` 目录放到 AstrBot 的 `data/plugins/` 下；
-2. Dashboard → 插件管理里能看到「主动心智 Proactive Mind」→ 启用/重载；
-3. 打开插件详情页 → 「视图」里的 **mind** 面板，或聊天里执行 `/mind status`。
+## 5. 不复读策略（面板里"三个字"那种循环）
 
-> 目录名必须是 `astrbot_plugin_proactive_mind`（元数据与面板路由都按这个名字注册）。
+旧版会把 `上次我的判断：{"reason": "…三个字…"}` 和 `我上次主动说话内容：…三个字…` 逐轮注入，导致模型自己复述自己。现在：
+- 上次主动消息只在 `state.recent_sent_hours`（默认 6h）内回放，超时只写"内容不再回放"；
+- 上次判断只保留 `行动/不打扰`，**不再注入理由原文**；
+- 提示词硬规则：不复述上一轮措辞、不反复催同一件事、已翻篇的旧话题不再索要回答；
+- `flow.flow_max_age_hours`（默认 24h）裁掉隔夜旧流水；
+- **流水读取绕过 LivingMemory 的短缓存**：它的缓存按"上次查询的 limit"落库，而它自己的空闲检测会调 `get_messages(limit=2)`，导致我们只读到 1~2 条（曾造成"她只剩最后一句上下文、开始自编自演"）。现在固定 `use_cache=False` 直读，并在条数异常时记 warning；
+- 面板轨迹对相邻两条判断做相似度标注（`panel.trace_similarity`，≥0.85 显示"疑似复读"）。
 
-## 3. 设置项（Dashboard → 插件配置）
+## 6. 设置项（Dashboard → 插件配置）
 
-所有配置都有中文说明，这里只列关键项：
+关键项（其余见配置页提示）：
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
-| `basic.enabled` | 开 | 总开关 |
-| `basic.trigger_on_user_message` | 开 | 用户发言后也判断一次 |
-| `basic.user_message_mode` | `decide` | `schedule_only` 则只重排时间、不发消息 |
-| `flow.flow_source` | `livingmemory` | 流水来源：记忆插件 / 平台历史 / 混合 |
-| `flow.flow_message_count` | **50** | 上下文窗口条数，与 LivingMemory 默认 50 对齐 |
-| `flow.follow_livingmemory_window` | 开 | 直接跟随 LivingMemory 的 `session_manager.context_window_size` |
-| `wake.wake_delay_minutes` | `0` | 唤醒时间整体延后（可被面板按会话覆盖） |
-| `wake.min/max_interval_minutes` | `5 / 1440` | 时间点钳制区间 |
-| `limit.max_consecutive_wakes` | `3` | **-1=无限；0=用户没回话时不再创建；N=最多连续 N 次** |
-| `limit.count_only_when_message_sent` | 关 | 只统计真的发了消息的唤醒 |
-| `mind.max_tool_calls` | `3` | 单次唤醒最多调用工具数（0=不调工具） |
-| `mind.tool_blacklist` | `future_task`、`send_message_to_user` | 默认屏蔽，避免与调度/发送路径打架 |
-| `memory.write_memory` | 开 | 主动行为写入长期记忆 |
-| `echo.persist_proactive_to_platform_history` | **开** | 以 assistant 记录写回 AstrBot 对话历史（回读校验） |
-| `echo.persist_proactive_to_livingmemory` | **开** | 以 `role=assistant` + `is_bot_message=true` 写入 LivingMemory 会话库 |
-| `debug.trace_keep` | `30` | 面板保留的决策轨迹条数 |
+| `wake.default_interval_minutes` | 120 | 对话兜底间隔 |
+| `hobby.default_interval_minutes` | 180 | 爱好兜底间隔 |
+| `hobby.memory_count` / `flow_count` | 30 / 20 | 爱好轮上下文 |
+| `hobby.memory_tag` / `keywords` | `proactive_hobby` / 兴趣… | 爱好记忆检索 |
+| `hobby.tool_whitelist` | bilibili_read / search_memes / web_search | 爱好轮工具 |
+| `temp.max_jobs` | 5 | 临时作业上限 |
+| `limit.max_consecutive_wakes` | 3 | -1 无限 / 0 不再创建 / N |
+| `mind.single_request` | 关 | 一轮只发一次请求 |
+| `memory.mode` | tool | 记忆写入方式 |
+| `state.recent_sent_hours` | 6 | 旧主动消息回放时限 |
+| `flow.flow_max_age_hours` | 24 | 流水回溯上限 |
+| `panel.stale_hours` | 6 | 面板"很久没主动说过话"阈值 |
+| `basic.user_message_mode` | decide | `record_only`=只记账不补话（A 模式） |
+| `basic.next_time_marker` | 开 | 解析并抠掉 `[[pmind_next:…]]` |
+| `mind.catalog_max_entries` | 24 | 工具目录上限（0=不限） |
+| `mind.catalog_char_budget` | 8000 | 工具目录字符预算（0=不限） |
+| `mind.tool_deny_pattern` | 见默认 | 额外剔除的工具名正则（已放宽，只挡破坏性/自身工具）|
 
-## 4. 面板（插件视图 `mind`）
+## 7. 面板与命令
 
-- 顶部：插件状态、LivingMemory 连接与窗口条数、当前模型、工具数、作业数；
-- 全局节奏：唤醒延后、连续上限、判断模式、最短/最长间隔（保存即写回配置）；
-- 会话卡片：下次唤醒时间（可直接改并保存）、倒计时、连续触发计数（`x / 上限`，达上限会标红）、
-  取消唤醒、按会话延后、立即跑一次、清零计数、最近一条主动消息、落库结果（平台历史 ✓/✗、LongMem ✓/✗）；
-- 最近决策轨迹：触发原因、判断结论与理由、想法、工具调用结果、要说的话、下次唤醒、告警/错误。
+- 面板：每个会话分三块（对话 / 爱好 / 临时），可改时间、取消、立即跑一次；显示"上次主动消息（含 25 小时前这类标注）""最近一条对话""爱好下轮计划"；轨迹显示请求次数/人格/流水计数与"疑似复读"。
+- 命令（管理员）：
+  - `/mind status`
+  - `/mind dialogue +30m`　`/mind hobby +3h [下轮想做什么]`
+  - `/mind temp +10m 提醒内容`
+  - `/mind cancel [dialogue|hobby|temp[:id]|all]`
+  - `/mind run [dialogue|hobby|temp]`　`/mind count [reset]`　`/mind tools`　`/mind on|off`
+- 工具（给主 Agent）：
+  - `pmind_wake`：临时提醒（一次性、可多个）；
+  - `pmind_schedule`：三类都能排——`dialogue` / `hobby`（可带 `intent` 下轮计划，带 `summary` 会**先写记忆再建作业**）/ `temp`。
+  - 延时回复用它俩，不要原地 sleep。
 
-## 5. 命令（需管理员）
+## 8. 状态文件与迁移
 
-| 命令 | 说明 |
-| --- | --- |
-| `/mind status` | 查看当前会话的启用状态、流水来源、下次唤醒、连续计数、落库开关 |
-| `/mind wake +30m` | 手动指定下次唤醒（也接受 ISO8601） |
-| `/mind cancel` | 取消当前会话的唤醒作业 |
-| `/mind delay 15` | 本会话唤醒自动延后 15 分钟；不带参数恢复默认 |
-| `/mind run` | 立刻跑一次完整决策（调试） |
-| `/mind count [reset]` | 查看 / 清零连续触发计数 |
-| `/mind tools` | 列出模型可选的工具 |
-| `/mind on` / `/mind off` | 启用 / 停用 |
+`data/plugin_data/astrbot_plugin_proactive_mind/state.json`（version 2）：
 
-## 6. 连续唤醒计数语义
-
-- 用户一说话 → `silent_wake_count = 0`、`user_replied_since_last_wake = true`；
-- 创建唤醒作业时：
-  - 用户刚说过话 → 计数 = 1（一定允许创建）；
-  - 用户没回话 → 计数 +1，若 `计数 > 上限`（且上限 ≠ -1）则**不创建**，清空下次唤醒并记 `consecutive_limit_reached`；
-- `max_consecutive_wakes = 0` 的实际效果：用户不回话就不再创建，用户一开口立刻恢复。
-
-## 7. 已知边界
-
-- 不使用 AstrBot 内置 cron 管理器：`active_agent` 型会再跑一遍主 Agent（与本插件三段决策冲突），
-  `basic` 型只支持 cron 表达式、重启后内存 handler 丢失、精度只到分钟。故唤醒作业由插件自持 APScheduler。
-- 平台历史是「读-改-写」整份 history，并发极端情况下可能丢一条记录（不会损坏数据），写入后会回读校验并重试一次。
-- LivingMemory 未安装/未就绪时：流水自动回退平台历史，落库只写平台历史，记忆写入回退本地
-  `memory_fallback.jsonl`，不影响作业链。
-- LivingMemory 的 `add_message_from_event` 会主动丢弃 cron/agent_wakeup 合成事件，因此主动消息走
-  `ConversationManager.add_message` 直接写入（这是它能进入反思窗口的关键）。
-
-## 8. 目录结构
-
+```jsonc
+{"version": 2,
+ "sessions": {"<umo>": {
+   "jobs": {
+     "dialogue": {"next_at": "...", "updated_at": "...", "last_spoke_at": null, "cancelled": false},
+     "hobby":    {"next_at": "...", "intent": "下轮要做什么", "intent_at": "...", "memory_id": null, "runs": 0, "cancelled": false},
+     "temp":     [{"id": "t-xxxx", "next_at": "...", "note": "...", "created_by": "pmind_wake", "created_at": "..."}]
+   }}},
+ "traces": [ ... ]}
 ```
-main.py                  插件入口：事件钩子、命令、面板路由注册
-_conf_schema.json        设置界面
-metadata.yaml            插件元数据
-core/
-  settings.py            配置归一与钳制
-  state.py               状态 + 轨迹持久化（原子写）
-  scheduler.py           唤醒作业调度（单作业/替换/恢复）
-  flow.py                流水读取（记忆插件 / 平台 / 混合 + SQLite 回退）
-  persona.py             人格解析（会话人格 → 默认人格）
-  llm.py                 Provider 解析 + JSON 输出解析与重试
-  toolbox.py             工具目录与串行执行
-  memory.py              主动行为写入记忆（工具 / 本地兜底）
-  echo.py                落库：平台历史 + LivingMemory
-  delivery.py            消息发送
-  decide.py              三段式决策流水线与调度收尾
-  webapi.py              面板 API
-pages/mind/              面板前端（index.html / app.js / style.css）
-tests/test_logic.py      单元测试（stdlib unittest）
-```
+
+- v1 → v2 自动迁移：`next_wake_at → jobs.dialogue`；`explicit_wake_at → 一条 temp`；`pending_note → jobs.hobby.intent`；迁移前备份 `state.json.bak-v1-<ts>`。
 
 ## 9. 自测
 
 ```bash
 cd <plugin_dir>
-python -m unittest discover -s tests -t . -v     # 38 个用例
+python -m unittest discover -s tests -t . -v     # 45 个用例
 python -m compileall -q .
 ```
 
-覆盖：时间解析与钳制、配置钳制、状态原子读写与轨迹裁剪、流水解析与裁剪、JSON 抽取、
-平台历史落库（含回读与去重）、LivingMemory 落库（`is_bot_message`/Bot 身份）、记忆文本、
-三段式流水线（不打扰 / 行动 / 只做事不说话 / 达上限不调度 / schedule_only / 判断失败兜底）。
+覆盖：时间/配置、状态迁移、三类作业模型、流水清洗与去重、爱好记忆检索（tag→关键词→近期）、
+上下文唯一性（人格 1 / 流水 1）、不回放旧话、三条周期的端到端（含"记忆先于排程"顺序断言）、
+工具回流第二次请求、单请求模式、上限拦截、临时作业不重建、调度器多类作业触发与恢复。
 
 ## 10. 回滚
 
-停用插件后直接删除 `data/plugins/astrbot_plugin_proactive_mind/` 即可；
-插件数据在 `data/plugin_data/astrbot_plugin_proactive_mind/`（`state.json`、`memory_fallback.jsonl`），
-可一并删除。不会修改 LivingMemory 的数据库结构与配置。
+停用插件后删除 `data/plugins/astrbot_plugin_proactive_mind/`；数据在
+`data/plugin_data/astrbot_plugin_proactive_mind/`（`state.json`、`memory_fallback.jsonl`），可一并删除。
+不修改 LivingMemory 的数据库结构与配置（只读它的流水与记忆表）。
 
 ## 11. 许可证
 
 [MIT](LICENSE) © 2026 redfoxhu
 
+---
+
+## 更新日志
+
+### 0.5.0
+
+**作业与执行**
+
+- 对话 / 临时作业交还主 Agent 执行（`mind.dialogue_execute` / `mind.temp_execute`），走完整管线：人格、LivingMemory 召回、工具循环、出站正则；爱好作业仍由插件自己跑。
+- 唤醒事件带 `wake_id`，记账只认最近一次投递（`mind.wake_record_window_seconds`），一次投递只记一次账，杜绝流式分片多次触发导致"时间被改早"。
+- 投递去重闸门 `mind.delivery_guard_seconds`：距上次投递过近的触发直接吞掉。
+- 保底改成"宽限期"语义：投递后 `mind.provisional_grace_seconds` 内没有回复才补垫，**她给了下次时间就永不启用**。
+- 启动时清理队列里积压的唤醒事件，避免重载/补跑堆事件导致"每 20 分钟冒一句"。
+- `wake.catch_up_missed_wakes` 默认关闭：过期作业顺延而不是补跑。
+
+**时间与区间**
+
+- "默认间隔"与"随机区间"合并：没给时间时直接在 `wake.min_interval_minutes ~ max_interval_minutes` 之间随机；爱好同理（`hobby.min ~ max`，上限放宽到 3 天）。
+- 解析器支持复合相对量：`+2h30m` / `+2小时30分` / `+1h45` / `+1天2小时`。
+- 标记里的话题支持 `|`、`｜`、`¦` 分隔；时间解析失败时轨迹如实标记 `marker_unparsed`，不再假装用了标记。
+
+**提示词**
+
+- 拆成 `output_hint`（每轮注入）与 `wake_hint`（仅到点唤醒轮），面板可改、可恢复默认。
+- 标记优先从正文解析；正文没有时回退读取思考块（`reasoning_content`），并标 `reply_marker_think`。
+- 标记剥离钩子加高优先级（`priority=100`），先于 LivingMemory 执行，记忆库不再存标记。
+
+**出站文本**
+
+- 平台侧替换 → 分段 → 过滤三段处理，可在面板配置规则、段数、间隔并预览。
+
+**面板**
+
+- 顶部三块（全局节奏 / 提示词 / 出站文本处理）并排等高布局，窄屏单列。
+- 会话卡显示下次话题、保底标记；轨迹区分 `reply_marker` / `reply_marker_think` / `random_fallback`。
+- "疑似复读"不再把"记录模式"这类结构套话当成复读。

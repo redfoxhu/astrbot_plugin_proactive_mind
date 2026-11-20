@@ -385,3 +385,153 @@ button.danger:hover {
   color: var(--pm-danger);
   background: var(--pm-danger-soft);
 }
+
+/* —— 三类作业分区 —— */
+.jobrow {
+  border-top: 1px dashed var(--pm-border);
+  padding: 10px 0 4px;
+}
+.jobrow:first-of-type { border-top: none; padding-top: 2px; }
+.jobtitle {
+  font-size: 12px;
+  color: var(--pm-text-dim);
+  letter-spacing: .3px;
+  margin-bottom: 6px;
+}
+.jobbody { display: flex; flex-direction: column; gap: 4px; }
+.jobbody .meta { font-size: 11.5px; color: var(--pm-text-dim); }
+.warn-text { color: var(--pm-warn) !important; }
+.jobrow .actions { margin-top: 8px; }
+.jobrow .actions input[type="datetime-local"] { min-width: 200px; }
+
+.temp-item { padding: 6px 0; border-top: 1px dashed var(--pm-border); }
+.temp-item:first-child { border-top: none; }
+.temp-item .meta b { color: var(--pm-text); }
+
+/* —— 顶部三块并排 + 紧凑 —— */
+.panel-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  gap: 10px;
+  align-items: start;
+  margin-bottom: 4px;
+}
+.panel-row > .panel {
+  padding: 12px 14px 12px;
+}
+.panel-row h2 {
+  margin: 0 0 6px;
+}
+.panel-row .sub {
+  margin: 0 0 8px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.panel-row .grid {
+  gap: 6px 12px;
+}
+.panel-row .field {
+  gap: 2px;
+}
+.panel-row .field > span {
+  font-size: 11px;
+  line-height: 1.4;
+}
+.panel-row input,
+.panel-row select {
+  padding: 5px 8px;
+}
+.panel-row textarea {
+  padding: 6px 8px;
+  min-height: 58px;
+}
+.panel-row .actions {
+  margin-top: 8px;
+  gap: 6px;
+}
+.panel-row .actions button {
+  padding: 5px 12px;
+}
+
+/* 顶部三块：字段两列排布，控件自适应宽度，尽量减少空白 */
+.panel-row .grid {
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+}
+.panel-row .field input,
+.panel-row .field select,
+.panel-row .field textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+.panel-row .field > div {
+  display: flex;
+  gap: 6px;
+}
+.panel-row .field > div > input {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.panel-row .field > div > input[type="number"] {
+  width: auto;
+}
+.panel-row .actions input[type="number"] {
+  width: 84px;
+}
+
+.panel-row .grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+
+/* 窄屏：三块改为单列堆叠，避免右侧大片空白 */
+@media (max-width: 1080px) {
+  .panel-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 三块等高：stretch + 底部操作行贴底 */
+.panel-row {
+  align-items: stretch;
+}
+.panel-row > .panel {
+  display: flex;
+  flex-direction: column;
+}
+.panel-row > .panel > .actions:last-of-type,
+.panel-row > .panel > :last-child {
+  margin-top: auto;
+}
+
+.panel-row .grid-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.panel-row > .panel {
+  justify-content: space-between;
+}
+
+/* 提示词板块：textarea 向上拉伸，紧贴说明文字 */
+.panel-row > .panel.panel-hints {
+  justify-content: flex-start;
+}
+.panel-row .panel-hints .grid-2 {
+  flex: 1 1 auto;
+  align-items: stretch;
+  margin-top: 0;
+}
+.panel-row .panel-hints .grid-2 .field {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.panel-row .panel-hints .grid-2 textarea {
+  flex: 1 1 auto;
+  min-height: 96px;
+  height: auto;
+  resize: vertical;
+}
+.panel-row .panel-hints .grid-2 .actions {
+  margin-top: 6px;
+}

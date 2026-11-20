@@ -19,6 +19,8 @@ MAX_CATALOG_ENTRIES = 24
 DESCRIPTION_LIMIT = 160
 PARAMETERS_LIMIT = 420
 RESULT_HARD_LIMIT = 20000
+# 白名单是"点名要的工具"，不做预算裁剪，但仍留一个安全上限
+EXPLICIT_LIST_LIMIT = 60
 
 # 记忆/检索/内容类工具优先出现在提示词里（"它真会做的事"）
 PRIORITY_HINTS = ("memor", "recall", "memory", "search", "bilibili", "fetch")
@@ -28,13 +30,50 @@ ALWAYS_INCLUDE_NAMES = ("bilibili_read",)
 LOW_PRIORITY_PATTERN = re.compile(
     r"(browser_|screenshot|scroll|crop|overlay|view_image)", re.IGNORECASE
 )
-# 未显式配置白名单时，默认不把"回合控制 / 群管理 / 破坏性"工具塞给主动心智
-DENY_NAME_PATTERN = re.compile(
-    r"(delete|stop_conversation|refresh_messages|mute|kick|ban|revoke|withdraw|"
-    r"recall_message|change_group_card|set_group_|set_essence|set_special_title|"
-    r"set_admin|leave_group)",
-    re.IGNORECASE,
+
+# 同一族工具只展示一个（其余名字在描述里列出，仍可直接调用），
+# 否则 14 个 web_search_* 会把目录预算吃光。
+TOOL_FAMILIES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^web_search_", re.IGNORECASE), "web_search"),
+    (re.compile(r"browser", re.IGNORECASE), "browser"),
+    (re.compile(r"^astrbot_execute_", re.IGNORECASE), "execute"),
 )
+
+
+def tool_family(name: str) -> str:
+    for pattern, family in TOOL_FAMILIES:
+        if pattern.search(name):
+            return family
+    return ""
+# 未显式配置白名单时，默认不把"破坏性 / 结构性冲突"工具塞给主动心智。
+# 说明：唤醒节奏由本插件统一管理，决不允许模型去调别的定时器（qts_schedule 之类），
+# 否则会出现"另一个调度器到点强行唤醒主 Agent"，绕开这里的 gate 与计数。
+# v0.5：正则改为配置项 mind.tool_deny_pattern（默认只挡破坏性/自身工具，宽松很多）。
+DEFAULT_DENY_PATTERN = (
+    r"(^|_)(delete|remove|drop|purge|wipe|truncate|unlink|"
+    r"kick|ban|mute)(_|$)|shutdown|future_task|manage_wake|"
+    r"pmind_|send_message_to_user"
+)
+DENY_NAME_PATTERN = re.compile(DEFAULT_DENY_PATTERN, re.IGNORECASE)
+
+
+def deny_pattern(settings=None) -> re.Pattern[str]:
+    """取当前生效的"额外剔除"正则（配置非法时退回默认）。"""
+    raw = ""
+    if settings is not None:
+        try:
+            raw = str(getattr(settings, "tool_deny_pattern", "") or "").strip()
+        except Exception:
+            raw = ""
+    if not raw:
+        return DENY_NAME_PATTERN
+    try:
+        return re.compile(raw, re.IGNORECASE)
+    except re.error:
+        logging.getLogger(LOGGER_NAME).warning(
+            f"[proactive_mind] mind.tool_deny_pattern 非法，已退回默认：{raw!r}"
+        )
+        return DENY_NAME_PATTERN
 
 
 def _priority_score(name: str, settings) -> int:
@@ -77,24 +116,75 @@ def get_tool_set(context) -> Any | None:
     return manager
 
 
+def get_llm_tool_manager(context) -> Any | None:
+    """取 FuncToolManager（平台工具注册表本体）。"""
+    getter = getattr(context, "get_llm_tool_manager", None)
+    if callable(getter):
+        try:
+            manager = getter()
+            if manager is not None:
+                return manager
+        except Exception:
+            pass
+    provider_manager = getattr(context, "provider_manager", None)
+    return getattr(provider_manager, "llm_tools", None)
+
+
 def iter_tools(context) -> list[Any]:
-    """列出全部工具对象。"""
+    """列出全部工具对象。
+
+    平台上工具分两类：
+    * plugin / MCP 工具 → ``get_full_tool_set().tools``（func_list）
+    * **内置工具**（web_search_* / astrbot_file_* / astrbot_execute_* / cua_* …）
+      → ``manager.iter_builtin_tools()``，它们不在 func_list 里，
+      只看 func_list 会以为"没有搜索工具"（v0.5 修的就是这个）。
+    """
+    tools: list[Any] = []
+    seen: set[str] = set()
+
     tool_set = get_tool_set(context)
-    tools = getattr(tool_set, "tools", None)
-    if isinstance(tools, list):
-        return tools
-    return []
+    listed = getattr(tool_set, "tools", None)
+    if isinstance(listed, list):
+        for tool in listed:
+            name = str(getattr(tool, "name", "") or "")
+            if name and name not in seen:
+                seen.add(name)
+                tools.append(tool)
+
+    manager = get_llm_tool_manager(context)
+    iter_builtin = getattr(manager, "iter_builtin_tools", None)
+    if callable(iter_builtin):
+        try:
+            for tool in iter_builtin() or []:
+                name = str(getattr(tool, "name", "") or "")
+                if name and name not in seen:
+                    seen.add(name)
+                    tools.append(tool)
+        except Exception as exc:
+            logging.getLogger(LOGGER_NAME).debug(
+                f"[proactive_mind] 读取内置工具失败: {exc}"
+            )
+    return tools
 
 
 def find_tool(context, name: str) -> Any | None:
-    """按名字查找工具对象。"""
+    """按名字查找工具对象（含内置工具）。"""
     if not name:
         return None
-    tool_set = get_tool_set(context)
-    getter = getattr(tool_set, "get_tool", None)
+    manager = get_llm_tool_manager(context)
+    getter = getattr(manager, "get_tool", None)
     if callable(getter):
         try:
             tool = getter(name)
+            if tool is not None:
+                return tool
+        except Exception:
+            pass
+    tool_set = get_tool_set(context)
+    setter = getattr(tool_set, "get_tool", None)
+    if callable(setter):
+        try:
+            tool = setter(name)
             if tool is not None:
                 return tool
         except Exception:
@@ -105,34 +195,147 @@ def find_tool(context, name: str) -> Any | None:
     return None
 
 
+def provider_settings(context) -> dict[str, Any]:
+    """取平台的 provider_settings（搜工具的密钥就配在这里）。"""
+    for name in ("get_config", "get_astrbot_config"):
+        getter = getattr(context, name, None)
+        if not callable(getter):
+            continue
+        try:
+            config = getter()
+        except Exception:
+            continue
+        if config is None:
+            continue
+        try:
+            section = config.get("provider_settings") if hasattr(config, "get") else None
+        except Exception:
+            section = None
+        if isinstance(section, dict):
+            return section
+    return {}
+
+
+def _nonempty(value: Any) -> bool:
+    if isinstance(value, (list, tuple)):
+        return any(str(item).strip() for item in value)
+    return bool(str(value or "").strip())
+
+
+def available_search_tools(context) -> dict[str, bool] | None:
+    """各搜索供应商是否配了密钥（None=无法判断，不做过滤）。
+
+    平台里所有搜索类工具共用 ``provider_settings.websearch_<provider>_key``：
+    ``web_search_bocha`` / ``news_search_serpapi`` / ``tavily_extract_web_page`` …
+    没配密钥时调用会直接返回 "xxx API key is not configured"，因此不能放进目录。
+    """
+    settings = provider_settings(context)
+    if not settings:
+        return None
+    if not settings.get("web_search", True):
+        return {}
+    ready: dict[str, bool] = {}
+    for key, value in settings.items():
+        lowered = str(key).lower()
+        if lowered.startswith("websearch_") and lowered.endswith("_key"):
+            provider = lowered[len("websearch_") : -len("_key")]
+            if provider:
+                ready[provider] = _nonempty(value)
+    # 百度用的是 app_builder key，名字对不上
+    if any("baidu" in str(k).lower() for k in settings):
+        ready["baidu"] = _nonempty(settings.get("websearch_baidu_app_builder_key"))
+    return ready
+
+
+def _search_provider_ok(name: str, ready: dict[str, bool] | None) -> bool:
+    """名字里带某供应商、而该供应商没配密钥 → 不进目录。"""
+    if ready is None:
+        return True
+    lowered = name.lower()
+    for provider, ok in ready.items():
+        if provider and provider in lowered:
+            return ok
+    return True
+
+
+def whitelist_match(name: str, whitelist: list[str]) -> bool:
+    """白名单支持"精确名"与"前缀"两种写法（如 web_search 可匹配 web_search_serpapi）。"""
+    if not whitelist or not name:
+        return False
+    lowered = name.lower()
+    for item in whitelist:
+        entry = str(item or "").strip()
+        if not entry:
+            continue
+        if name == entry:
+            return True
+        if entry.endswith("*") and lowered.startswith(entry[:-1].lower()):
+            return True
+        if lowered.startswith(entry.lower()):
+            return True
+    return False
+
+
 def is_allowed(name: str, settings, *, for_catalog: bool = True) -> bool:
-    """判断工具是否可用（黑名单总是生效，白名单只约束模型挑选）。"""
+    """判断工具是否可用。
+
+    * 黑名单永远生效（含插件自身调度/发送相关的结构性保护项）；
+    * 白名单只约束"模型挑工具"，不影响插件内部调用（支持前缀写法）；
+    * 目录模式下还会剔除配置的额外正则（默认只挡破坏性/自身工具）。
+    """
     if not name:
         return False
     if name in settings.tool_blacklist:
         return False
     whitelist = settings.tool_whitelist
+    if whitelist_match(name, whitelist):
+        return True
+    if deny_pattern(settings).search(name):
+        return False
     if for_catalog and whitelist:
-        return name in whitelist
+        return False
     return True
 
 
-def build_catalog(context, settings, log: logging.Logger | None = None) -> list[dict[str, Any]]:
-    """构建给模型看的工具清单（按相关性排序并限量，避免提示词爆炸）。"""
+def build_catalog(
+    context,
+    settings,
+    log: logging.Logger | None = None,
+    *,
+    allowed: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """构建给模型看的工具清单（按相关性排序并限量，避免提示词爆炸）。
+
+    Args:
+        allowed: 额外的白名单（例如爱好轮只给内容类工具）；为空表示用配置里的白名单。
+    """
     log = log or logging.getLogger(LOGGER_NAME)
-    whitelist = settings.tool_whitelist
+    whitelist = list(allowed) if allowed else settings.tool_whitelist
+    pattern = deny_pattern(settings)
+    search_ready = available_search_tools(context)  # 没配密钥的搜索工具直接不进目录
+    max_entries = int(settings.catalog_max_entries)  # 0=不限
+    char_budget = int(settings.catalog_char_budget)  # 0=不限
     scored: list[tuple[int, int, dict[str, Any]]] = []
     for order, tool in enumerate(iter_tools(context)):
         name = str(getattr(tool, "name", "") or "")
-        if not name or not is_allowed(name, settings, for_catalog=True):
+        # pmind_wake / pmind_schedule 是给主 Agent 用的排程工具，不该出现在主动心智自己的工具表里
+        if name in {"pmind_wake", "pmind_schedule"}:
             continue
-        if not bool(getattr(tool, "active", True)):
+        if not name or not bool(getattr(tool, "active", True)):
+            continue
+        # 黑名单永远生效
+        if name in settings.tool_blacklist:
+            continue
+        if not _search_provider_ok(name, search_ready):
             continue
         if whitelist:
-            score = 0 if name in whitelist else 1
-        elif DENY_NAME_PATTERN.search(name):
-            continue
+            # 显式白名单（配置或按类型传入）：只留名单内（支持前缀，如 web_search）
+            if not whitelist_match(name, whitelist):
+                continue
+            score = 0
         else:
+            if pattern.search(name):
+                continue
             score = _priority_score(name, settings)
         description = str(getattr(tool, "description", "") or "").strip()
         parameters = getattr(tool, "parameters", None) or {}
@@ -152,10 +355,57 @@ def build_catalog(context, settings, log: logging.Logger | None = None) -> list[
             )
         )
     scored.sort(key=lambda item: (item[0], item[1]))
-    catalog = [item[2] for item in scored[:MAX_CATALOG_ENTRIES]]
+    if whitelist:
+        # 显式白名单（配置或按类型传入）= 用户/她自己点名的工具：
+        # 原样全部给，不做"同族去重"，也不按条数/字符预算截断（只留硬上限保护）。
+        catalog = [item[2] for item in scored[:EXPLICIT_LIST_LIMIT]]
+        log.debug(
+            f"[proactive_mind] 白名单工具 {len(catalog)} 个（不去重不截断）: "
+            f"{[item['name'] for item in catalog]}"
+        )
+        return catalog
+
+    # 同族去重：只保留第一个，其余名字并进描述（仍然可以按名字调用）
+    family_members: dict[str, list[str]] = {}
+    for _score, _order, entry in scored:
+        family = tool_family(entry["name"])
+        if family:
+            family_members.setdefault(family, []).append(entry["name"])
+    kept_family: set[str] = set()
+    deduped: list[tuple[int, int, dict[str, Any]]] = []
+    for item in scored:
+        family = tool_family(item[2]["name"])
+        if family:
+            if family in kept_family:
+                continue
+            kept_family.add(family)
+            others = [n for n in family_members.get(family, []) if n != item[2]["name"]]
+            if others:
+                item[2]["description"] = (
+                    item[2]["description"]
+                    + f"（同族还有：{', '.join(others[:6])}，可直接按名字调用）"
+                )[: DESCRIPTION_LIMIT + 120]
+        deduped.append(item)
+
+    catalog: list[dict[str, Any]] = []
+    used_chars = 0
+    for _score, _order, entry in deduped:
+        if max_entries and len(catalog) >= max_entries:
+            break
+        size = (
+            len(entry["name"])
+            + len(entry["description"])
+            + len(entry["parameters"])
+            + 24  # 渲染时的固定开销
+        )
+        if char_budget and catalog and used_chars + size > char_budget:
+            break
+        catalog.append(entry)
+        used_chars += size
     log.debug(
-        f"[proactive_mind] 工具目录 {len(catalog)}/{len(scored)} 个: "
-        f"{[item['name'] for item in catalog]}"
+        f"[proactive_mind] 工具目录 {len(catalog)}/{len(scored)} 个"
+        f"（上限 {max_entries or '不限'} 条 / 预算 {char_budget or '不限'} 字符，"
+        f"实际 {used_chars} 字符）: {[item['name'] for item in catalog]}"
     )
     return catalog
 
