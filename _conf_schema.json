@@ -480,6 +480,12 @@
           "max": 1800,
           "step": 10
         }
+      },
+      "synthetic_admin": {
+        "description": "插件工具轮使用管理员身份",
+        "hint": "插件自己跑的轮次（爱好等）调用受限工具时需要；关掉后 qts 的 browser_* 等仅管理员工具会被拒绝。",
+        "type": "bool",
+        "default": true
       }
     }
   },

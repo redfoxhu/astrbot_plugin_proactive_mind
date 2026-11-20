@@ -324,7 +324,16 @@
           ? '<span class="badge warn" title="相似度 ' + (trace.reason_similarity || "") + '">疑似复读</span>'
           : "";
         var steps = (trace.steps || []).map(function (step) {
-          return '<div class="meta">· ' + esc(step.tool) + " " + (step.ok ? "成功" : "失败（" + esc(step.error || "") + "）") + "</div>";
+          var argText = "";
+          if (step.args && typeof step.args === "object") {
+            var parts = Object.keys(step.args).map(function (key) {
+              return key + "=" + step.args[key];
+            });
+            if (parts.length) {
+              argText = ' <span class="meta-inline">(' + esc(parts.join(", ").slice(0, 220)) + ")</span>";
+            }
+          }
+          return '<div class="meta">· ' + esc(step.tool) + argText + " " + (step.ok ? "成功" : "失败（" + esc(step.error || "") + "）") + "</div>";
         }).join("");
         var notes = (trace.warnings || []).concat(trace.errors || []);
         var detail = notes.length

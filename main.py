@@ -36,7 +36,7 @@ from .core.memory import write_memory
 from .core.tools import ProactiveScheduleTool, ProactiveWakeTool
 
 PLUGIN_NAME = "astrbot_plugin_proactive_mind"
-PLUGIN_VERSION = "0.5.0"
+PLUGIN_VERSION = "0.5.1"
 
 
 class ProactiveMindPlugin(star.Star):
@@ -249,7 +249,7 @@ class ProactiveMindPlugin(star.Star):
             reason=reason,
             importance=importance,
             log=self.log,
-            event=toolbox.make_event(self.context, umo),
+            event=toolbox.make_event(self.context, umo, admin=self.settings.synthetic_admin),
             data_dir=self.data_dir,
         )
 

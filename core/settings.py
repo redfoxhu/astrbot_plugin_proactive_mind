@@ -70,6 +70,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "temp_execute": "main_agent",
         # 交还主 Agent 时先按随机区间垫一个保底时间
         "provisional_enabled": True,
+        # 插件自己跑的工具轮：合成事件是否带管理员身份（决定 qts 浏览器等受限工具能否调用）
+        "synthetic_admin": True,
         # 两次唤醒投递的最小间隔（秒）：防止保底 job 与真实到点重复唤醒
         "delivery_guard_seconds": 90,
         # 投递后等这么久还没回复，才补垫保底（秒）
@@ -614,6 +616,11 @@ class Settings:
     def delivery_guard_seconds(self) -> int:
         """两次唤醒投递的最小间隔（秒）；0=不限制。"""
         return as_int(self.raw("mind", "delivery_guard_seconds"), 90, 0, 3600)
+
+    @property
+    def synthetic_admin(self) -> bool:
+        """合成事件是否以管理员身份运行工具（默认开）。"""
+        return as_bool(self.raw("mind", "synthetic_admin"), True)
 
     @property
     def provisional_enabled(self) -> bool:

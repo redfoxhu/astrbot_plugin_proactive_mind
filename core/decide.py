@@ -56,6 +56,23 @@ def _as_str(value: Any, default: str = "") -> str:
     return str(value).strip() if not isinstance(value, str) else value.strip()
 
 
+def _brief_args(args: Any, max_chars: int = 160) -> dict[str, Any]:
+    """把工具入参压成可读的小字典（长字符串截断，嵌套结构只留概要）。"""
+    if not isinstance(args, dict):
+        return {}
+    brief: dict[str, Any] = {}
+    for key, value in args.items():
+        name = str(key)[:40]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            text = str(value) if not isinstance(value, str) else value
+            brief[name] = text[:max_chars] + ("…" if len(text) > max_chars else "")
+        elif isinstance(value, (list, tuple)):
+            brief[name] = f"[{len(value)} items]"
+        else:
+            brief[name] = "{…}"
+    return brief
+
+
 class DecisionEngine:
     """主动心智的决策引擎（一个插件实例一个）。"""
 
@@ -219,9 +236,9 @@ class DecisionEngine:
                 # none 已废弃：当作"没给具体时间"→ 随机兜底
                 hint = ""
             if marker_topic:
-                jobs["dialogue"]["topic"] = marker_topic[:60]
+                jobs["dialogue"]["topic"] = marker_topic[:120]
                 jobs["dialogue"]["topic_at"] = timeutil.iso(now)
-                trace["topic"] = marker_topic[:60]
+                trace["topic"] = marker_topic[:120]
             tool_next = self._dialogue_set_by_tool(session, jobs)
             if not hint and tool_next:
                 # 她这一轮自己调了 pmind_schedule(kind=dialogue) —— 用她定的时间
@@ -381,7 +398,7 @@ class DecisionEngine:
 
         records: list[dict[str, Any]] = []
         if steps:
-            event = toolbox.make_event(self.context, umo)
+            event = toolbox.make_event(self.context, umo, admin=self.settings.synthetic_admin)
             records = await toolbox.execute_steps(
                 self.context, settings, steps=steps, log=log, event=event
             )
@@ -390,6 +407,7 @@ class DecisionEngine:
                     "tool": record.get("tool"),
                     "ok": record.get("ok"),
                     "error": record.get("error"),
+                    "args": _brief_args(record.get("args")),
                     "result_preview": str(record.get("result") or "")[:300],
                 }
                 for record in records
@@ -480,7 +498,7 @@ class DecisionEngine:
                 reason=reason,
                 importance=settings.hobby_importance,
                 log=log,
-                event=toolbox.make_event(self.context, umo),
+                event=toolbox.make_event(self.context, umo, admin=self.settings.synthetic_admin),
                 data_dir=self.data_dir,
             )
         else:
@@ -514,7 +532,7 @@ class DecisionEngine:
             hint, marker_topic = timeutil.split_marker(hint_raw)
             hint = hint or None
             if marker_topic:
-                jobs["dialogue"]["topic"] = marker_topic[:60]
+                jobs["dialogue"]["topic"] = marker_topic[:120]
                 jobs["dialogue"]["topic_at"] = timeutil.iso(now)
             raw_next = hint or dialogue_next
             if hint:
@@ -958,9 +976,9 @@ class DecisionEngine:
             self._schedule_dialogue(umo, raw_next, trace, now=now, bypass_limit=bypass_limit)
         # 话题：这一轮给了新话题就换新，否则用完即清（一次性）
         if marker_topic:
-            jobs["dialogue"]["topic"] = marker_topic[:60]
+            jobs["dialogue"]["topic"] = marker_topic[:120]
             jobs["dialogue"]["topic_at"] = timeutil.iso(now)
-            trace["topic"] = marker_topic[:60]
+            trace["topic"] = marker_topic[:120]
         else:
             jobs["dialogue"]["topic"] = None
             jobs["dialogue"]["topic_at"] = None

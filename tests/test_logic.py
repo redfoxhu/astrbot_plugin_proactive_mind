@@ -51,6 +51,18 @@ class TimeutilTests(unittest.TestCase):
     def setUp(self) -> None:
         self.now = datetime(2026, 11, 18, 12, 0, tzinfo=TZ)
 
+    def test_long_marker_is_parsed(self) -> None:
+        """标记内容超过 64 字也要能解析（模型爱写长话题）。"""
+        long_topic = "接着从收藏夹列表里点开子收藏夹，挑两个有料的原图看标题、用真正看懂B站视频解析，截图发给主人并锐评，别再忘标记"
+        text = f"正文一句话。\n\n[[pmind_next:2026-11-20 22:10|{long_topic}]]"
+        cleaned, value = timeutil.strip_next_marker(text)
+        self.assertIsNotNone(value)
+        self.assertNotIn("pmind_next", cleaned)
+        hint, topic = timeutil.split_marker(value)
+        self.assertEqual(hint, "2026-11-20 22:10")
+        self.assertEqual(topic, long_topic)
+        self.assertGreater(len(value), 64)
+
     def test_parse_compound_offsets(self) -> None:
         """模型常写 +2h30m / +2小时30分：必须能解析成 +150 分钟。"""
         now = timeutil.now(TZ)
@@ -1537,6 +1549,29 @@ class SchedulerTests(unittest.IsolatedAsyncioTestCase):
 # 面板辅助
 # ----------------------------------------------------------------------
 class WebapiHelperTests(unittest.TestCase):
+    def test_brief_args_truncates_long_values(self) -> None:
+        """工具入参记录：长字符串截断，嵌套只留概要。"""
+        from core.decide import _brief_args
+
+        brief = _brief_args(
+            {
+                "url": "https://www.bilibili.com/video/BV1Pv4764Ear?" + "x" * 300,
+                "wait": 3,
+                "flag": True,
+                "items": [1, 2, 3],
+                "nested": {"a": 1},
+                "none": None,
+            }
+        )
+        self.assertTrue(brief["url"].endswith("…"))
+        self.assertLessEqual(len(brief["url"]), 161)
+        self.assertEqual(brief["wait"], "3")
+        self.assertEqual(brief["flag"], "True")
+        self.assertEqual(brief["items"], "[3 items]")
+        self.assertEqual(brief["nested"], "{…}")
+        self.assertEqual(brief["none"], "None")
+        self.assertEqual(_brief_args(None), {})
+
     def test_boilerplate_reasons_not_marked_repeated(self) -> None:
         """记录模式这类套话一字不差也不算复读（没有判断信息）。"""
         from core import webapi

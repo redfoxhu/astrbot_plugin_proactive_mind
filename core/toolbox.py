@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 import json
 import logging
 import re
@@ -422,19 +423,29 @@ def describe_catalog(catalog: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def make_event(context, umo: str, note: str = "[主动心智]"):
-    """构造合成事件，供需要 event 的工具（会话/身份/管理员判定）使用。"""
+def make_event(context, umo: str, note: str = "[主动心智]", admin: bool = False):
+    """构造合成事件，供需要 event 的工具（会话/身份/管理员判定）使用。
+
+    Args:
+        admin: 是否把事件身份标成管理员。受限工具（如 qts 的 ``browser_*``）
+            在工具侧会检查 ``event.is_admin()``，插件自己跑的轮次默认不带身份，
+            打开这个开关后这些工具才能正常调用。
+    """
     try:
         from astrbot.core.cron.events import CronMessageEvent
         from astrbot.core.platform.message_session import MessageSession
 
         session = MessageSession.from_str(umo)
-        return CronMessageEvent(
+        event = CronMessageEvent(
             context=context,
             session=session,
             message=note,
             extras={"proactive_mind": True},
         )
+        if admin:
+            with suppress(Exception):
+                event.role = "admin"
+        return event
     except Exception as exc:  # pragma: no cover - 依赖宿主版本
         logging.getLogger(LOGGER_NAME).debug(
             f"[proactive_mind] 构造合成事件失败: {exc}"
